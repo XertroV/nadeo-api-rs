@@ -25,6 +25,8 @@ impl NadeoCredentials {
     }
 
     /// Create credentials from a ubisoft login
+    ///
+    /// ! Not tested
     pub fn ubisoft(email: &str, password: &str) -> Self {
         NadeoCredentials::Ubisoft {
             e: email.to_string(),
@@ -435,6 +437,7 @@ impl NadeoToken {
     // }
 }
 
+#[cfg(test)]
 mod tests {
     use std::error::Error;
 

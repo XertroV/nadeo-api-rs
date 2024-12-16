@@ -27,6 +27,7 @@ pub struct Zone {
     pub zoneId: String,
 }
 
+#[cfg(test)]
 mod tests {
     use crate::{
         auth::{NadeoClient, UserAgentDetails},

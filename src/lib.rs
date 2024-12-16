@@ -15,6 +15,6 @@ pub mod core;
 pub mod live;
 #[allow(async_fn_in_trait)]
 pub mod meet;
-// #[cfg(test)]
+#[cfg(test)]
 pub mod test_helpers;
 pub mod urls;

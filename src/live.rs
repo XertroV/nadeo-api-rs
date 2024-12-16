@@ -338,6 +338,7 @@ pub struct MonthlyCampaign_Media {
     pub liveButtonForegroundUrl: String,
 }
 
+#[cfg(test)]
 mod tests {
     use std::u32;
 
