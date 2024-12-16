@@ -1,9 +1,9 @@
-use std::{borrow::Borrow, error::Error, sync::Arc};
+use std::{error::Error, sync::Arc};
 
 use base64::prelude::*;
 use chrono::TimeZone;
 use serde_json::{json, Value};
-use tokio::sync::{RwLock, RwLockReadGuard, Semaphore, SemaphorePermit, TryLockError};
+use tokio::sync::{RwLock, Semaphore, SemaphorePermit, TryLockError};
 
 // Handle nadeo authentication
 /// Credentials for nadeo services -- create via [::dedicated_server](NadeoCredentials::dedicated_server) or [::ubisoft](NadeoCredentials::ubisoft)
@@ -144,9 +144,9 @@ pub static AUTH_DEDI_URL: &str =
 pub static AUTH_REFRESH_URL: &str =
     "https://prod.trackmania.core.nadeo.online/v2/authentication/token/refresh";
 
-pub struct UbiAuth {
-    token: String,
-}
+// pub struct UbiAuth {
+//     token: String,
+// }
 
 /// User agent details for nadeo services; format: `app_name/version (contact_email)`
 #[derive(Debug)]
@@ -198,8 +198,8 @@ pub struct NadeoClient {
     credentials: NadeoCredentials,
     core_token: RwLock<NadeoToken>,
     live_token: RwLock<NadeoToken>,
-    user_agent: UserAgentDetails,
-    max_concurrent_requests: usize,
+    pub user_agent: UserAgentDetails,
+    pub max_concurrent_requests: usize,
     req_semaphore: Arc<Semaphore>,
     client: reqwest::Client,
 }

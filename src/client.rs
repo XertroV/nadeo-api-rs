@@ -1,7 +1,7 @@
 use reqwest::header::{HeaderValue, AUTHORIZATION};
 pub use reqwest::{Error as RqError, RequestBuilder, Response};
 pub use serde_json::Value;
-use tokio::sync::{RwLockReadGuard, SemaphorePermit, TryLockError};
+use tokio::sync::{SemaphorePermit, TryLockError};
 
 use crate::{auth::*, urls::*};
 
