@@ -175,7 +175,7 @@ pub trait LiveApiClient: NadeoApiClient {
 
 impl LiveApiClient for NadeoClient {}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct MapInfos {
     pub mapList: Vec<MapInfo>,
@@ -183,7 +183,7 @@ pub struct MapInfos {
 }
 
 /// get_map_info response types
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct MapInfo {
     pub uid: String,
@@ -211,7 +211,7 @@ pub struct MapInfo {
 }
 
 /// get_group_surround response types
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct RecordsSurround {
     pub groupUid: String,
@@ -219,7 +219,7 @@ pub struct RecordsSurround {
     pub tops: Vec<RecordsSurround_Top>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct RecordsSurround_Top {
     pub zoneId: String,
@@ -227,7 +227,7 @@ pub struct RecordsSurround_Top {
     pub top: Vec<RecordsSurround_TopEntry>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct RecordsSurround_TopEntry {
     pub accountId: String,
@@ -239,7 +239,7 @@ pub struct RecordsSurround_TopEntry {
 }
 
 /// get_records_by_time response types
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct RecordsByTime {
     pub groupUid: String,
@@ -248,7 +248,7 @@ pub struct RecordsByTime {
     pub zones: Vec<RecordsByTime_Zone>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct RecordsByTime_Zone {
     pub zoneId: String,
@@ -256,7 +256,7 @@ pub struct RecordsByTime_Zone {
     pub ranking: RecordsByTime_ZoneRanking,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct RecordsByTime_ZoneRanking {
     pub position: i32,
@@ -264,7 +264,7 @@ pub struct RecordsByTime_ZoneRanking {
 }
 
 /// Map Group Leaderboard response types
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct MapGroupLeaderboard {
     pub groupUid: String,
@@ -273,7 +273,7 @@ pub struct MapGroupLeaderboard {
     pub tops: Vec<MapGroupLeaderboard_Top>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct MapGroupLeaderboard_Top {
     pub zoneId: String,
@@ -281,7 +281,7 @@ pub struct MapGroupLeaderboard_Top {
     pub top: Vec<MapGroupLeaderboard_TopEntry>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct MapGroupLeaderboard_TopEntry {
     pub accountId: String,
@@ -292,7 +292,7 @@ pub struct MapGroupLeaderboard_TopEntry {
 }
 
 /// TOTD/Royal response types
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct MonthlyCampaign_List {
     pub monthList: Vec<MonthlyCampaign_Month>,
@@ -301,7 +301,7 @@ pub struct MonthlyCampaign_List {
     pub relativeNextRequest: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct MonthlyCampaign_Month {
     pub year: i32,
@@ -311,7 +311,7 @@ pub struct MonthlyCampaign_Month {
     pub media: MonthlyCampaign_Media,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct MonthlyCampaign_Day {
     pub campaignId: i32,
@@ -326,7 +326,7 @@ pub struct MonthlyCampaign_Day {
     pub relativeEnd: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct MonthlyCampaign_Media {
     pub buttonBackgroundUrl: String,

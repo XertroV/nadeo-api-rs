@@ -212,6 +212,7 @@ impl NadeoApiClient for NadeoClient {
         &self.client
     }
 
+    /// prefer aget_auth_token
     fn get_auth_token(&self, audience: NadeoAudience) -> Result<String, TryLockError> {
         Ok(match audience {
             Core => self.core_token.try_read()?.access_token.clone(),
@@ -265,13 +266,13 @@ impl NadeoClient {
 
     pub async fn ensure_tokens_valid(&self) {
         let mut core_token = self.core_token.write().await;
-        if core_token.is_access_expired() {
+        if core_token.is_access_expired() || core_token.can_refresh() {
             println!("Core token expired, refreshing");
             core_token.run_refresh(&self.client).await;
         }
 
         let mut live_token = self.live_token.write().await;
-        if live_token.is_access_expired() {
+        if live_token.is_access_expired() || live_token.can_refresh() {
             println!("Live token expired, refreshing");
             live_token.run_refresh(&self.client).await;
         }
@@ -421,6 +422,23 @@ impl NadeoToken {
         i64_to_datetime(self.get_refresh_expiry_i64()?)
     }
 
+    pub fn get_access_refresh_after(&self) -> Result<chrono::DateTime<chrono::Utc>, String> {
+        i64_to_datetime(get_token_body_refresh_after(
+            &self.get_access_token_body()?,
+        )?)
+    }
+
+    pub fn get_refresh_refresh_after(&self) -> Result<chrono::DateTime<chrono::Utc>, String> {
+        i64_to_datetime(get_token_body_refresh_after(
+            &self.get_refresh_token_body()?,
+        )?)
+    }
+
+    pub fn can_refresh(&self) -> bool {
+        self.get_access_refresh_after()
+            .map_or(false, |after| after < now_dt())
+    }
+
     pub fn is_access_expired(&self) -> bool {
         self.get_access_expiry().map_or(true, |exp| exp < now_dt())
     }
@@ -460,7 +478,12 @@ impl NadeoToken {
             .send()
             .await
             .unwrap();
+        #[cfg(test)]
+        dbg!(&req);
         let body: Value = req.json().await.unwrap();
+        #[cfg(test)]
+        dbg!(&body);
+
         self.access_token = body["accessToken"].as_str().unwrap().to_string();
         if body["refreshToken"].is_null() {
             // refresh token not returned, keep old one
@@ -484,8 +507,8 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
     #[ignore]
+    #[tokio::test]
     async fn test_login() -> Result<(), Box<dyn Error>> {
         // works for dedicated, disable for now to avoid spam
         return Ok(());
@@ -495,5 +518,35 @@ mod tests {
         let res = cred.run_login(&client).await?;
         println!("{:?}", res);
         Ok(())
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_print_token_times() -> Result<(), Box<dyn Error>> {
+        let cred = get_test_creds();
+        let client = reqwest::Client::new();
+        let tokens = cred.run_login(&client).await?;
+        println!("----------------------------");
+        print_token_stuff(&tokens.core);
+        println!("----------------------------");
+        print_token_stuff(&tokens.live);
+        println!("----------------------------");
+        Ok(())
+    }
+
+    fn print_token_stuff(token: &NadeoToken) {
+        println!("Audience: {:?}", token.audience);
+        println!("Access token: {}", token.access_token);
+        println!("Refresh token: {}", token.refresh_token);
+        println!("Access expiry: {:?}", token.get_access_expiry());
+        println!("Refresh expiry: {:?}", token.get_refresh_expiry());
+        println!(
+            "Access refresh after: {:?}",
+            token.get_access_refresh_after()
+        );
+        println!(
+            "Refresh refresh after: {:?}",
+            token.get_refresh_refresh_after()
+        );
     }
 }

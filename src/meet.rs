@@ -26,7 +26,7 @@ pub trait MeetApiClient: NadeoApiClient {
 
 impl MeetApiClient for NadeoClient {}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct CupOfTheDay {
     pub id: i64,
@@ -38,7 +38,7 @@ pub struct CupOfTheDay {
     pub deletedOn: Option<i64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct Competition {
     pub id: i64,
@@ -70,7 +70,7 @@ pub struct Competition {
     pub partition: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct Challenge {
     pub id: i64,
