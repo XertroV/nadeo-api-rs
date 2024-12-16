@@ -1,10 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{
-    auth::NadeoClient,
-    client::{run_req, NadeoApiClient},
-};
+use crate::{auth::NadeoClient, client::NadeoApiClient};
 use std::error::Error;
 
 /// API calls for the Meet API

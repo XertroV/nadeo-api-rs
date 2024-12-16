@@ -26,8 +26,6 @@ impl NadeoCredentials {
     }
 
     /// Create credentials from a ubisoft login
-    ///
-    /// ! Not tested
     pub fn ubisoft(email: &str, password: &str) -> Self {
         NadeoCredentials::Ubisoft {
             e: email.to_string(),
@@ -478,11 +476,20 @@ impl NadeoToken {
             .send()
             .await
             .unwrap();
+
         #[cfg(test)]
-        dbg!(&req);
+        {
+            println!("----------------------------");
+            println!("{:?} Token before refresh:", self.audience);
+            print_token_stuff(&self);
+            println!("----------------------------");
+        }
+
+        // #[cfg(test)]
+        // dbg!(&req);
         let body: Value = req.json().await.unwrap();
-        #[cfg(test)]
-        dbg!(&body);
+        // #[cfg(test)]
+        // dbg!(&body);
 
         self.access_token = body["accessToken"].as_str().unwrap().to_string();
         if body["refreshToken"].is_null() {
@@ -496,7 +503,32 @@ impl NadeoToken {
             self.refresh_token = body["refreshToken"].as_str().unwrap().to_string();
             println!("Updated refresh token for audience {:?}", self.audience);
         }
+
+        #[cfg(test)]
+        {
+            println!("----------------------------");
+            println!("{:?} Token after refresh:", self.audience);
+            print_token_stuff(&self);
+            println!("----------------------------");
+        }
     }
+}
+
+#[cfg(test)]
+fn print_token_stuff(token: &NadeoToken) {
+    println!("Audience: {:?}", token.audience);
+    println!("Access token: {}", token.access_token);
+    println!("Refresh token: {}", token.refresh_token);
+    println!("Access expiry: {:?}", token.get_access_expiry());
+    println!("Refresh expiry: {:?}", token.get_refresh_expiry());
+    println!(
+        "Access refresh after: {:?}",
+        token.get_access_refresh_after()
+    );
+    println!(
+        "Refresh refresh after: {:?}",
+        token.get_refresh_refresh_after()
+    );
 }
 
 #[cfg(test)]
@@ -510,10 +542,17 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_login() -> Result<(), Box<dyn Error>> {
-        // works for dedicated, disable for now to avoid spam
-        return Ok(());
-
         let cred = get_test_creds();
+        let client = reqwest::Client::new();
+        let res = cred.run_login(&client).await?;
+        println!("{:?}", res);
+        Ok(())
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_ubi_login() -> Result<(), Box<dyn Error>> {
+        let cred = get_test_ubi_creds();
         let client = reqwest::Client::new();
         let res = cred.run_login(&client).await?;
         println!("{:?}", res);
