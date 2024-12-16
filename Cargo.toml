@@ -6,6 +6,7 @@ description = "A simple wrapper for the Nadeo API"
 readme = "README.md"
 repository = "https://github.com/xertrov/nadeo-api-rs"
 license = "Unlicense"
+exclude = [".vscode/*"]
 
 [dependencies]
 base64 = "0.22.1"
