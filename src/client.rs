@@ -19,13 +19,14 @@ pub async fn run_req<'a>(
 }
 
 pub trait NadeoApiClient {
-    fn get_client(&self) -> &reqwest::Client;
+    async fn get_client(&self) -> &reqwest::Client;
 
     async fn rate_limit(&self) -> SemaphorePermit;
 
     async fn get_file_size(&self, url: &str) -> Result<u64, RqError> {
         Ok(self
             .get_client()
+            .await
             .head(url)
             .send()
             .await?
@@ -54,6 +55,7 @@ pub trait NadeoApiClient {
     async fn core_get(&self, path: &str) -> (RequestBuilder, SemaphorePermit) {
         (
             self.get_client()
+                .await
                 .get(&format!("{}{}", CORE_URL, path))
                 .header(AUTHORIZATION, self.get_auth_header_value(Core).await),
             self.rate_limit().await,
@@ -67,6 +69,7 @@ pub trait NadeoApiClient {
     async fn core_post_bytes(&self, path: &str, body: &[u8]) -> (RequestBuilder, SemaphorePermit) {
         (
             self.get_client()
+                .await
                 .post(&format!("{}{}", CORE_URL, path))
                 .header(AUTHORIZATION, self.get_auth_header_value(Core).await)
                 .body(body.to_vec()),
@@ -80,6 +83,7 @@ pub trait NadeoApiClient {
     async fn core_post(&self, path: &str, body: &Value) -> (RequestBuilder, SemaphorePermit) {
         (
             self.get_client()
+                .await
                 .post(&format!("{}{}", CORE_URL, path))
                 .header(AUTHORIZATION, self.get_auth_header_value(Core).await)
                 .json(body),
@@ -93,6 +97,7 @@ pub trait NadeoApiClient {
     async fn live_get(&self, path: &str) -> (RequestBuilder, SemaphorePermit) {
         (
             self.get_client()
+                .await
                 .get(&format!("{}{}", LIVE_URL, path))
                 .header(AUTHORIZATION, self.get_auth_header_value(Live).await),
             self.rate_limit().await,
@@ -105,6 +110,7 @@ pub trait NadeoApiClient {
     async fn live_post_bytes(&self, path: &str, body: &[u8]) -> (RequestBuilder, SemaphorePermit) {
         (
             self.get_client()
+                .await
                 .post(&format!("{}{}", LIVE_URL, path))
                 .header(AUTHORIZATION, self.get_auth_header_value(Live).await)
                 .body(body.to_vec()),
@@ -118,6 +124,7 @@ pub trait NadeoApiClient {
     async fn live_post(&self, path: &str, body: &Value) -> (RequestBuilder, SemaphorePermit) {
         (
             self.get_client()
+                .await
                 .post(&format!("{}{}", LIVE_URL, path))
                 .header(AUTHORIZATION, self.get_auth_header_value(Live).await)
                 .json(body),
@@ -131,6 +138,7 @@ pub trait NadeoApiClient {
     async fn meet_get(&self, path: &str) -> (RequestBuilder, SemaphorePermit) {
         (
             self.get_client()
+                .await
                 .get(&format!("{}{}", MEET_URL, path))
                 .header(AUTHORIZATION, self.get_auth_header_value(Live).await),
             self.rate_limit().await,
@@ -143,6 +151,7 @@ pub trait NadeoApiClient {
     async fn meet_post_bytes(&self, path: &str, body: &[u8]) -> (RequestBuilder, SemaphorePermit) {
         (
             self.get_client()
+                .await
                 .post(&format!("{}{}", MEET_URL, path))
                 .header(AUTHORIZATION, self.get_auth_header_value(Live).await)
                 .body(body.to_vec()),
@@ -156,6 +165,7 @@ pub trait NadeoApiClient {
     async fn meet_post(&self, path: &str, body: &Value) -> (RequestBuilder, SemaphorePermit) {
         (
             self.get_client()
+                .await
                 .post(&format!("{}{}", MEET_URL, path))
                 .header(AUTHORIZATION, self.get_auth_header_value(Live).await)
                 .json(body),

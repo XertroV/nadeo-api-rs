@@ -2,6 +2,7 @@ use std::{error::Error, sync::Arc};
 
 use base64::prelude::*;
 use chrono::TimeZone;
+use reqwest::header::AUTHORIZATION;
 use serde_json::{json, Value};
 use tokio::sync::{RwLock, Semaphore, SemaphorePermit, TryLockError};
 
@@ -205,7 +206,9 @@ pub struct NadeoClient {
 }
 
 impl NadeoApiClient for NadeoClient {
-    fn get_client(&self) -> &reqwest::Client {
+    async fn get_client(&self) -> &reqwest::Client {
+        // todo: check if token is expired / refreshable
+        self.ensure_tokens_valid().await;
         &self.client
     }
 
@@ -258,6 +261,20 @@ impl NadeoClient {
             req_semaphore,
             client,
         })
+    }
+
+    pub async fn ensure_tokens_valid(&self) {
+        let mut core_token = self.core_token.write().await;
+        if core_token.is_access_expired() {
+            println!("Core token expired, refreshing");
+            core_token.run_refresh(&self.client).await;
+        }
+
+        let mut live_token = self.live_token.write().await;
+        if live_token.is_access_expired() {
+            println!("Live token expired, refreshing");
+            live_token.run_refresh(&self.client).await;
+        }
     }
 }
 
@@ -435,6 +452,28 @@ impl NadeoToken {
     //         _ => None,
     //     }
     // }
+
+    async fn run_refresh(&mut self, client: &reqwest::Client) {
+        let req = client
+            .post(AUTH_REFRESH_URL)
+            .header(AUTHORIZATION, self.get_refresh_authz_header())
+            .send()
+            .await
+            .unwrap();
+        let body: Value = req.json().await.unwrap();
+        self.access_token = body["accessToken"].as_str().unwrap().to_string();
+        if body["refreshToken"].is_null() {
+            // refresh token not returned, keep old one
+            println!(
+                "Refresh token not returned for audience {:?}",
+                self.audience
+            );
+        } else {
+            // todo, test
+            self.refresh_token = body["refreshToken"].as_str().unwrap().to_string();
+            println!("Updated refresh token for audience {:?}", self.audience);
+        }
+    }
 }
 
 #[cfg(test)]

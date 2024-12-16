@@ -440,4 +440,49 @@ mod tests {
             .unwrap();
         println!("Records by Time: {:?}", res);
     }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_long_running_refresh_token() {
+        let creds = get_test_creds();
+        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
+        let client = NadeoClient::create(creds, UserAgentDetails::new_autodetect(&email), 1)
+            .await
+            .unwrap();
+        let start = chrono::Utc::now();
+        println!("Long running test -- starting at {:?}", start);
+        let n = 200;
+        for i in 0..n {
+            println!("Running iteration {} / {}", i + 1, n);
+            println!("\n\n--- token below? ---\n\n");
+            let r = client
+                .get_map_leaderboard("PrometheusByXertroVFtArcher", true, 10, i * 10)
+                .await
+                .unwrap();
+            println!("\n\n--- end ---\n\n");
+            println!(
+                "Response: {}",
+                r.tops[0]
+                    .top
+                    .iter()
+                    .map(|t| format!("{}. {} -- {} ms", t.position, t.zoneName, t.score))
+                    .collect::<Vec<String>>()
+                    .join("\n")
+            );
+            if i == n - 1 {
+                println!(
+                    "Last iter. Duration so far: {:?}",
+                    chrono::Utc::now() - start
+                );
+                break;
+            }
+            println!("Sleeping for 10 minutes @ {:?}", chrono::Utc::now());
+            tokio::time::sleep(tokio::time::Duration::from_secs(60 * 10)).await;
+            println!(
+                "Next iter. Duration so far: {:?} @ {:?}",
+                chrono::Utc::now() - start,
+                chrono::Utc::now()
+            );
+        }
+    }
 }

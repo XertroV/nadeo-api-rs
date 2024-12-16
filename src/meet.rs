@@ -1,17 +1,26 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{auth::NadeoClient, client::NadeoApiClient};
+use crate::{
+    auth::NadeoClient,
+    client::{run_req, NadeoApiClient},
+};
 use std::error::Error;
 
 /// API calls for the Meet API
 pub trait MeetApiClient: NadeoApiClient {
     /// <https://webservices.openplanet.dev/meet/cup-of-the-day/current>
     ///
-    /// Get the current Cup of the Day
-    async fn get_cup_of_the_day(&self) -> Result<CupOfTheDay, Box<dyn Error>> {
-        let j = self.run_meet_get("api/cup-of-the-day/current").await?;
-        Ok(serde_json::from_value(j)?)
+    /// Get the current Cup of the Day. Sometimes the status will be 204 No Content. (Indicated by Ok(None))
+    async fn get_cup_of_the_day(&self) -> Result<Option<CupOfTheDay>, Box<dyn Error>> {
+        let (rb, permit) = self.meet_get("api/cup-of-the-day/current").await;
+        let resp = rb.send().await?;
+        if resp.status().as_u16() == 204 {
+            return Ok(None);
+        }
+        let j = resp.json().await?;
+        drop(permit);
+        Ok(Some(serde_json::from_value(j)?))
     }
 }
 
@@ -85,8 +94,11 @@ pub struct Challenge {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use crate::{
         auth::{NadeoClient, UserAgentDetails},
+        client::NadeoApiClient,
         meet::MeetApiClient,
         test_helpers::get_test_creds,
     };
@@ -99,8 +111,23 @@ mod tests {
         let client = NadeoClient::create(creds, UserAgentDetails::new_autodetect(&email), 10)
             .await
             .unwrap();
+        // let r = client.meet_get("api/cup-of-the-day/current").await;
+        // let resp = r.0.send().await.unwrap();
+        // println!("{:?}", resp);
+        // let b = resp.bytes().await.unwrap();
+        // println!("bytes {:?}", b);
+        // let j: Value = resp.json().await.unwrap();
+        // println!("json {:?}", j);
         let cup = client.get_cup_of_the_day().await.unwrap();
-        assert!(cup.id > 0);
         println!("{:?}", cup);
+        match cup {
+            Some(c) => {
+                assert!(c.id > 0);
+                println!("Cup of the Day: {}", c.competition.name);
+            }
+            None => {
+                println!("No Cup of the Day (confirm it's working then ignore this test)");
+            }
+        }
     }
 }
