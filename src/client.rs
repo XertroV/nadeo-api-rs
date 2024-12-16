@@ -10,7 +10,7 @@ pub enum MonthlyCampaignType {
     TOTD,
 }
 
-async fn run_req<'a>(
+pub async fn run_req<'a>(
     (req, permit): (RequestBuilder, SemaphorePermit<'a>),
 ) -> Result<Value, RqError> {
     let r = req.send().await?.json().await?;
