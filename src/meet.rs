@@ -100,7 +100,7 @@ mod tests {
         test_helpers::get_test_creds,
     };
 
-    // #[ignore]
+    #[ignore]
     #[tokio::test]
     async fn test_get_cup_of_the_day() {
         let creds = get_test_creds();
@@ -123,7 +123,7 @@ mod tests {
                 println!("Cup of the Day: {}", c.competition.name);
             }
             None => {
-                println!("No Cup of the Day (confirm it's working then ignore this test)");
+                println!("No Cup of the Day");
             }
         }
     }

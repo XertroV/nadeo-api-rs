@@ -2,9 +2,13 @@ use std::{error::Error, sync::Arc};
 
 use base64::prelude::*;
 use chrono::TimeZone;
-use reqwest::header::AUTHORIZATION;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use ringbuf::{traits::*, HeapRb};
 use serde_json::{json, Value};
-use tokio::sync::{RwLock, Semaphore, SemaphorePermit, TryLockError};
+use tokio::{
+    select,
+    sync::{RwLock, Semaphore, SemaphorePermit, TryLockError},
+};
 
 // Handle nadeo authentication
 /// Credentials for nadeo services -- create via [::dedicated_server](NadeoCredentials::dedicated_server) or [::ubisoft](NadeoCredentials::ubisoft)
@@ -94,7 +98,7 @@ impl NadeoCredentials {
                     .post(AUTH_UBI_URL)
                     .basic_auth(e, Some(p))
                     .header("Ubi-AppId", "86263886-327a-4328-ac69-527f0d20a237")
-                    .header("Content-Type", "application/json")
+                    .header(CONTENT_TYPE, "application/json")
                     .send()
                     .await?;
                 let body: Value = res.json().await?;
@@ -102,13 +106,13 @@ impl NadeoCredentials {
                 let auth2 = format!("ubi_v1 t={}", ticket);
                 req_for_audience_token = client
                     .post(AUTH_UBI_URL2)
-                    .header("Authorization", auth2)
-                    .header("Content-Type", "application/json");
+                    .header(AUTHORIZATION, auth2)
+                    .header(CONTENT_TYPE, "application/json");
             }
             NadeoCredentials::DedicatedServer { u, p } => {
                 req_for_audience_token = client
                     .post(AUTH_DEDI_URL)
-                    .header("Content-Type", "application/json")
+                    .header(CONTENT_TYPE, "application/json")
                     .basic_auth(u, Some(p));
             }
         };
@@ -192,7 +196,7 @@ impl UserAgentDetails {
     }
 }
 
-#[derive(Debug)]
+#[derive()]
 pub struct NadeoClient {
     credentials: NadeoCredentials,
     core_token: RwLock<NadeoToken>,
@@ -201,6 +205,8 @@ pub struct NadeoClient {
     pub max_concurrent_requests: usize,
     req_semaphore: Arc<Semaphore>,
     client: reqwest::Client,
+    req_times: RwLock<HeapRb<chrono::DateTime<chrono::Utc>>>,
+    last_avg_req_per_sec: RwLock<f64>,
 }
 
 impl NadeoApiClient for NadeoClient {
@@ -226,10 +232,13 @@ impl NadeoApiClient for NadeoClient {
     }
 
     async fn rate_limit(&self) -> SemaphorePermit {
-        self.req_semaphore
+        let permit = self
+            .req_semaphore
             .acquire()
             .await
-            .expect("Failed to acquire semaphore")
+            .expect("Failed to acquire semaphore");
+        self.keep_long_running_rate_limit().await;
+        permit
     }
 }
 
@@ -251,6 +260,8 @@ impl NadeoClient {
         // run auth
         let tokens = credentials.run_login(&client).await?;
 
+        let req_times = RwLock::new(HeapRb::new(500));
+
         Ok(Self {
             credentials,
             core_token: RwLock::new(tokens.core),
@@ -259,6 +270,8 @@ impl NadeoClient {
             max_concurrent_requests,
             req_semaphore,
             client,
+            req_times,
+            last_avg_req_per_sec: RwLock::new(0.0),
         })
     }
 
@@ -274,6 +287,49 @@ impl NadeoClient {
             println!("Live token expired, refreshing");
             live_token.run_refresh(&self.client).await;
         }
+    }
+
+    async fn keep_long_running_rate_limit(&self) {
+        let mut req_times = self.req_times.write().await;
+        let now = now_dt();
+        // if we have made less than 500 requests, just push the current time
+        if !req_times.is_full() {
+            // update avg req per sec
+            *self.last_avg_req_per_sec.write().await = match req_times.try_peek() {
+                Some(oldest) => {
+                    req_times.occupied_len() as f64
+                        / (now - *oldest).num_milliseconds().max(1) as f64
+                        * 1000.0
+                }
+                None => 0.0,
+            };
+            req_times.try_push(now).unwrap();
+            return;
+        }
+        let oldest = req_times.try_peek().unwrap();
+        let diff = now - *oldest;
+        let req_per_sec =
+            req_times.capacity().get() as f64 / diff.num_milliseconds().max(1) as f64 * 1000.0;
+        *self.last_avg_req_per_sec.write().await = req_per_sec;
+        if req_per_sec > 1.0 {
+            // we have an exclusive lock on req_times, so we can sleep and we won't miss any requests
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        }
+        req_times.push_overwrite(now_dt());
+    }
+
+    pub async fn calc_avg_req_per_sec(&self) -> f64 {
+        let req_times = self.req_times.read().await;
+        if req_times.is_empty() {
+            return 0.0;
+        }
+        let now = now_dt();
+        let diff = now - *req_times.try_peek().unwrap();
+        req_times.occupied_len() as f64 / diff.num_milliseconds() as f64 * 1000.0
+    }
+
+    pub async fn get_cached_avg_req_per_sec(&self) -> f64 {
+        *self.last_avg_req_per_sec.read().await
     }
 }
 

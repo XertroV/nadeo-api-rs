@@ -2,6 +2,8 @@
 
 A library to making using the Nadeo API easy.
 
+`use nadeo_api_rs::prelude::*`
+
 ## Usage
 
 1. Create a `NadeoCredentials`.

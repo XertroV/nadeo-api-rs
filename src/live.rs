@@ -383,11 +383,25 @@ mod tests {
         let uids = Vec::from(&MAP_UIDS[..]);
         let res = client.get_map_info_multiple(&uids).await.unwrap();
         println!("Map Info Multiple: {:?}", res);
+        println!(
+            "get_cached_avg_req_per_sec: {:?}",
+            client.get_cached_avg_req_per_sec().await
+        );
         for (mi, uid) in res.mapList.iter().zip(MAP_UIDS.iter()) {
             let mi2 = client.get_map_info(uid).await.unwrap();
             assert_eq!(mi, &mi2);
             println!("Matches: {:?} -> {:?}", mi.uid, mi2);
+            println!(
+                "get_cached_avg_req_per_sec: {:?}",
+                client.get_cached_avg_req_per_sec().await
+            );
         }
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        let mi2 = client.get_map_info(uids[0]).await.unwrap();
+        println!(
+            "get_cached_avg_req_per_sec: {:?}",
+            client.get_cached_avg_req_per_sec().await
+        );
     }
 
     // test get_map_info for PrometheusByXertroVFtArcher
