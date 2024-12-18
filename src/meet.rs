@@ -98,6 +98,7 @@ mod tests {
         client::NadeoApiClient,
         meet::MeetApiClient,
         test_helpers::get_test_creds,
+        user_agent_auto,
     };
 
     #[ignore]
@@ -105,7 +106,7 @@ mod tests {
     async fn test_get_cup_of_the_day() {
         let creds = get_test_creds();
         let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
-        let client = NadeoClient::create(creds, UserAgentDetails::new_autodetect(&email), 10)
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
             .await
             .unwrap();
         // let r = client.meet_get("api/cup-of-the-day/current").await;

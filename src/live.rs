@@ -361,7 +361,7 @@ mod tests {
     async fn test_monthly_campaign() {
         let creds = get_test_creds();
         let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
-        let client = NadeoClient::create(creds, UserAgentDetails::new_autodetect(&email), 10)
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
             .await
             .unwrap();
         let res = client
@@ -377,7 +377,7 @@ mod tests {
     async fn test_get_map_info_multiple() {
         let creds = get_test_creds();
         let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
-        let client = NadeoClient::create(creds, UserAgentDetails::new_autodetect(&email), 10)
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
             .await
             .unwrap();
         let uids = Vec::from(&MAP_UIDS[..]);
@@ -410,7 +410,7 @@ mod tests {
     async fn test_get_map_info() {
         let creds = get_test_creds();
         let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
-        let client = NadeoClient::create(creds, UserAgentDetails::new_autodetect(&email), 10)
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
             .await
             .unwrap();
         let res = client
@@ -426,7 +426,7 @@ mod tests {
     async fn test_surround() {
         let creds = get_test_creds();
         let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
-        let client = NadeoClient::create(creds, UserAgentDetails::new_autodetect(&email), 10)
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
             .await
             .unwrap();
         let res = client
@@ -442,7 +442,7 @@ mod tests {
     async fn test_records_by_time() {
         let creds = get_test_creds();
         let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
-        let client = NadeoClient::create(creds, UserAgentDetails::new_autodetect(&email), 10)
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
             .await
             .unwrap();
         let res = client
@@ -460,7 +460,7 @@ mod tests {
     async fn test_long_running_refresh_token() {
         let creds = get_test_creds();
         let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
-        let client = NadeoClient::create(creds, UserAgentDetails::new_autodetect(&email), 1)
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 1)
             .await
             .unwrap();
         let start = chrono::Utc::now();

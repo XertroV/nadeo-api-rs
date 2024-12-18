@@ -90,6 +90,7 @@ mod tests {
         auth::{NadeoClient, UserAgentDetails},
         core::CoreApiClient,
         test_helpers::get_test_creds,
+        user_agent_auto,
     };
 
     #[ignore]
@@ -97,7 +98,7 @@ mod tests {
     async fn test_get_zones() {
         let creds = get_test_creds();
         let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
-        let client = NadeoClient::create(creds, UserAgentDetails::new_autodetect(&email), 10)
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
             .await
             .unwrap();
         // let zones = client.get_zones().await.unwrap();

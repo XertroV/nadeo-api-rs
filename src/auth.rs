@@ -159,26 +159,39 @@ pub struct UserAgentDetails {
     pub version: String,
 }
 
-impl UserAgentDetails {
-    /// Detects app_name and version from cargo manifest
-    pub fn new_autodetect(contact_email: &str) -> Self {
-        let app_name = env!("CARGO_PKG_NAME").to_string();
-        let version = env!("CARGO_PKG_VERSION").to_string();
-        Self {
-            app_name,
-            contact_email: contact_email.to_string(),
-            version,
-        }
-    }
+#[macro_export]
+macro_rules! user_agent_auto {
+    ($email:expr) => {
+        UserAgentDetails::new(env!("CARGO_CRATE_NAME"), $email, env!("CARGO_PKG_VERSION"))
+    };
+}
+#[macro_export]
+macro_rules! user_agent_auto_ver {
+    ($appname:expr, $email:expr) => {
+        UserAgentDetails::new($appname, $email, env!("CARGO_PKG_VERSION"))
+    };
+}
 
-    pub fn new_autover(app_name: &str, contact_email: &str) -> Self {
-        let version = env!("CARGO_PKG_VERSION").to_string();
-        Self {
-            app_name: app_name.to_string(),
-            contact_email: contact_email.to_string(),
-            version,
-        }
-    }
+impl UserAgentDetails {
+    // /// Detects app_name and version from cargo manifest
+    // pub fn new_autodetect(contact_email: &str) -> Self {
+    //     let app_name = crate_name!().to_string();
+    //     let version = env!("CARGO_PKG_VERSION").to_string();
+    //     Self {
+    //         app_name,
+    //         contact_email: contact_email.to_string(),
+    //         version,
+    //     }
+    // }
+
+    // pub fn new_autover(app_name: &str, contact_email: &str) -> Self {
+    //     let version = env!("CARGO_PKG_VERSION").to_string();
+    //     Self {
+    //         app_name: app_name.to_string(),
+    //         contact_email: contact_email.to_string(),
+    //         version,
+    //     }
+    // }
 
     pub fn new(app_name: &str, contact_email: &str, version: &str) -> Self {
         Self {
