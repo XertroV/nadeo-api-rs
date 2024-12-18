@@ -1,12 +1,12 @@
 [package]
 name = "nadeo-api-rs"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "A simple wrapper for the Nadeo API"
 readme = "README.md"
 repository = "https://github.com/xertrov/nadeo-api-rs"
 license = "Unlicense"
-exclude = [".vscode/*", "*.txt"]
+exclude = [".vscode/*", "*.txt", ".env"]
 
 [dependencies]
 base64 = "0.22.1"
