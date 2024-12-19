@@ -107,7 +107,7 @@ pub trait LiveApiClient: NadeoApiClient {
 
     /// <https://webservices.openplanet.dev/live/leaderboards/surround>
     ///
-    /// calls `api/token/leaderboard/group/{groupUid}/map/{mapUid}/surround/{lower}/{upper}?score={score}`
+    /// calls `api/token/leaderboard/group/{groupUid}/map/{mapUid}/surround/{lower}/{upper}?score={score}&onlyWorld={onlyWorld}`
     async fn get_group_surround(
         &self,
         group_uid: &str,
@@ -115,6 +115,7 @@ pub trait LiveApiClient: NadeoApiClient {
         lower: i32,
         upper: i32,
         score: u32,
+        only_world: bool,
     ) -> Result<RecordsSurround, Box<dyn Error>> {
         let (rb, permit) = self
             .live_get(&format!(
@@ -122,7 +123,10 @@ pub trait LiveApiClient: NadeoApiClient {
             ))
             .await;
         let j: Value = rb
-            .query(&[("score", score.to_string())])
+            .query(&[
+                ("score", score.to_string()),
+                ("onlyWorld", only_world.to_string()),
+            ])
             .send()
             .await?
             .json()
@@ -142,8 +146,9 @@ pub trait LiveApiClient: NadeoApiClient {
         lower: i32,
         upper: i32,
         score: u32,
+        only_world: bool,
     ) -> Result<RecordsSurround, Box<dyn Error>> {
-        self.get_group_surround("Personal_Best", map_uid, lower, upper, score)
+        self.get_group_surround("Personal_Best", map_uid, lower, upper, score, only_world)
             .await
     }
 
@@ -430,7 +435,7 @@ mod tests {
             .await
             .unwrap();
         let res = client
-            .get_pb_surround("PrometheusByXertroVFtArcher", 1, 1, u32::MAX)
+            .get_pb_surround("PrometheusByXertroVFtArcher", 1, 1, u32::MAX, true)
             .await
             .unwrap();
         println!("Surround: {:?}", res);
