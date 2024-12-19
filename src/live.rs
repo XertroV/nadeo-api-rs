@@ -155,9 +155,16 @@ pub trait LiveApiClient: NadeoApiClient {
     /// <https://webservices.openplanet.dev/live/maps/info>
     ///
     /// calls `api/token/map/{mapUid}`
-    async fn get_map_info(&self, map_uid: &str) -> Result<MapInfo, Box<dyn Error>> {
+    ///
+    /// Returns `None` if the map isn't uploaded
+    async fn get_map_info(&self, map_uid: &str) -> Result<Option<MapInfo>, Box<dyn Error>> {
         let (rb, permit) = self.live_get(&format!("api/token/map/{map_uid}")).await;
-        let j: Value = rb.send().await?.json().await?;
+        let resp = rb.send().await?;
+        if resp.status().as_u16() == 404 {
+            drop(permit);
+            return Ok(None);
+        }
+        let j: Value = resp.json().await?;
         drop(permit);
         Ok(serde_json::from_value(j)?)
     }
@@ -393,7 +400,7 @@ mod tests {
             client.get_cached_avg_req_per_sec().await
         );
         for (mi, uid) in res.mapList.iter().zip(MAP_UIDS.iter()) {
-            let mi2 = client.get_map_info(uid).await.unwrap();
+            let mi2 = client.get_map_info(uid).await.unwrap().unwrap();
             assert_eq!(mi, &mi2);
             println!("Matches: {:?} -> {:?}", mi.uid, mi2);
             println!(
@@ -421,8 +428,18 @@ mod tests {
         let res = client
             .get_map_info("PrometheusByXertroVFtArcher")
             .await
+            .unwrap()
             .unwrap();
         println!("Map Info: {:?}", res);
+        let res = client
+            .get_map_info("XXXXetheusByXertroVFtArcher")
+            .await
+            .unwrap();
+        assert_eq!(res, None);
+        println!(
+            "missing map info was None (good). get_cached_avg_req_per_sec: {:?}",
+            client.get_cached_avg_req_per_sec().await
+        );
     }
 
     // test surround
@@ -435,7 +452,7 @@ mod tests {
             .await
             .unwrap();
         let res = client
-            .get_pb_surround("PrometheusByXertroVFtArcher", 1, 1, u32::MAX, true)
+            .get_pb_surround("PrometheusByXertroVFtArcher", 0, 0, u32::MAX, true)
             .await
             .unwrap();
         println!("Surround: {:?}", res);

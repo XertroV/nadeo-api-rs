@@ -2,7 +2,10 @@ use std::{error::Error, sync::Arc};
 
 use base64::prelude::*;
 use chrono::TimeZone;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use reqwest::{
+    header::{AUTHORIZATION, CONTENT_TYPE},
+    redirect::Policy,
+};
 use ringbuf::{traits::*, HeapRb};
 use serde_json::{json, Value};
 use tokio::{
@@ -219,6 +222,7 @@ pub struct NadeoClient {
     req_semaphore: Arc<Semaphore>,
     client: reqwest::Client,
     req_times: RwLock<HeapRb<chrono::DateTime<chrono::Utc>>>,
+    nb_reqs: RwLock<usize>,
     last_avg_req_per_sec: RwLock<f64>,
 }
 
@@ -255,6 +259,10 @@ impl NadeoApiClient for NadeoClient {
     }
 }
 
+// proper defaults: 1.0, 1500
+pub const MAX_REQ_PER_SEC: f64 = 3.0;
+pub const HIT_MAX_REQ_PER_SEC_WAIT: u64 = 500;
+
 impl NadeoClient {
     pub fn get_authz_header_for_auth(&self) -> String {
         self.credentials.get_basic_auth_header()
@@ -268,6 +276,7 @@ impl NadeoClient {
         let req_semaphore = Arc::new(Semaphore::new(max_concurrent_requests));
         let client = reqwest::Client::builder()
             .user_agent(user_agent.get_user_agent_string())
+            .redirect(Policy::limited(5))
             .build()?;
 
         // run auth
@@ -284,6 +293,7 @@ impl NadeoClient {
             req_semaphore,
             client,
             req_times,
+            nb_reqs: RwLock::new(0),
             last_avg_req_per_sec: RwLock::new(0.0),
         })
     }
@@ -303,6 +313,7 @@ impl NadeoClient {
     }
 
     async fn keep_long_running_rate_limit(&self) {
+        *self.nb_reqs.write().await += 1;
         let mut req_times = self.req_times.write().await;
         let now = now_dt();
         // if we have made less than 500 requests, just push the current time
@@ -324,9 +335,9 @@ impl NadeoClient {
         let req_per_sec =
             req_times.capacity().get() as f64 / diff.num_milliseconds().max(1) as f64 * 1000.0;
         *self.last_avg_req_per_sec.write().await = req_per_sec;
-        if req_per_sec > 1.0 {
+        if req_per_sec > MAX_REQ_PER_SEC {
             // we have an exclusive lock on req_times, so we can sleep and we won't miss any requests
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(HIT_MAX_REQ_PER_SEC_WAIT)).await;
         }
         req_times.push_overwrite(now_dt());
     }
@@ -343,6 +354,10 @@ impl NadeoClient {
 
     pub async fn get_cached_avg_req_per_sec(&self) -> f64 {
         *self.last_avg_req_per_sec.read().await
+    }
+
+    pub async fn get_nb_reqs(&self) -> usize {
+        *self.nb_reqs.read().await
     }
 }
 
@@ -625,6 +640,20 @@ mod tests {
         let client = reqwest::Client::new();
         let res = cred.run_login(&client).await?;
         println!("{:?}", res);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_file_size() -> Result<(), Box<dyn Error>> {
+        let cred = get_test_creds();
+        let nc = NadeoClient::create(cred, user_agent_auto!("email"), 2).await?;
+        let size = nc
+            .get_file_size(
+                "https://core.trackmania.nadeo.live/maps/0c90c62a-f3ea-491c-ab86-1245ff575667/file",
+            )
+            .await?;
+        println!("Size: {}", size);
+        assert!(size > 0);
         Ok(())
     }
 

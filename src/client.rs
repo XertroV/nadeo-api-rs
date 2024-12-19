@@ -1,4 +1,4 @@
-use reqwest::header::{HeaderValue, AUTHORIZATION};
+use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_LENGTH, LOCATION};
 pub use reqwest::{Error as RqError, RequestBuilder, Response};
 pub use serde_json::Value;
 use tokio::sync::{SemaphorePermit, TryLockError};
@@ -24,14 +24,11 @@ pub trait NadeoApiClient {
     async fn rate_limit(&self) -> SemaphorePermit;
 
     async fn get_file_size(&self, url: &str) -> Result<u64, RqError> {
-        Ok(self
-            .get_client()
-            .await
-            .head(url)
-            .send()
-            .await?
-            .content_length()
-            .unwrap())
+        let resp = self.get_client().await.head(url).send().await?;
+        Ok(resp
+            .headers()
+            .get(CONTENT_LENGTH)
+            .map_or(0, |v| v.to_str().unwrap_or("0").parse().unwrap_or(1)))
     }
 
     fn get_auth_token(&self, audience: NadeoAudience) -> Result<String, TryLockError>;
