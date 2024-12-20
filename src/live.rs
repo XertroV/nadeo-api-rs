@@ -217,9 +217,9 @@ pub struct MapInfo {
     pub public: bool,
     pub favorite: bool,
     pub playable: bool,
-    /// usually (always?) ""
+    /// usually blank or same as mapType
     pub mapStyle: String,
-    /// Typically "TM_Race"
+    /// Typically "TrackMania\\TM_Race"
     pub mapType: String,
     pub collectionName: String,
 }

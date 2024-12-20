@@ -49,6 +49,20 @@ pub trait NadeoApiClient {
         hv
     }
 
+    async fn oauth_get<'a>(
+        &self,
+        path: &str,
+        token: &OAuthToken,
+        _permit: &SemaphorePermit<'a>,
+    ) -> RequestBuilder {
+        let rb = self
+            .get_client()
+            .await
+            .get(&format!("{}{}", OAUTH_URL, path))
+            .header(AUTHORIZATION, token.get_authz_header());
+        rb
+    }
+
     async fn core_get(&self, path: &str) -> (RequestBuilder, SemaphorePermit) {
         (
             self.get_client()

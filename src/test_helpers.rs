@@ -18,3 +18,8 @@ pub fn get_test_ubi_creds() -> NadeoCredentials {
         std::env::var("NADEO_API_TEST_UBI_PASSWORD").expect("NADEO_API_TEST_UBI_PASSWORD not set");
     NadeoCredentials::ubisoft(&u, &p)
 }
+
+pub fn get_test_email() -> String {
+    dotenv::dotenv().expect("Failed to read .env file");
+    std::env::var("NADEO_TEST_UA_EMAIL").expect("NADEO_TEST_UA_EMAIL not set")
+}

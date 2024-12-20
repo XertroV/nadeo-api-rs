@@ -679,6 +679,7 @@ dependencies = [
  "chrono",
  "dotenv",
  "lazy_static",
+ "log",
  "parking_lot",
  "reqwest",
  "ringbuf",

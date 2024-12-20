@@ -1,12 +1,17 @@
-use std::{error::Error, sync::Arc};
+use std::{
+    error::Error,
+    sync::{Arc, OnceLock},
+};
 
 use base64::prelude::*;
-use chrono::TimeZone;
+use chrono::{DateTime, TimeZone, Utc};
+use log::{info, warn};
 use reqwest::{
     header::{AUTHORIZATION, CONTENT_TYPE},
     redirect::Policy,
 };
 use ringbuf::{traits::*, HeapRb};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::{
     select,
@@ -138,6 +143,59 @@ impl NadeoCredentials {
     }
 }
 
+#[derive(Debug)]
+pub struct OAuthCredentials {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+impl OAuthCredentials {
+    pub fn new(client_id: &str, client_secret: &str) -> Self {
+        Self {
+            client_id: client_id.to_string(),
+            client_secret: client_secret.to_string(),
+        }
+    }
+
+    pub async fn run_login(&self, client: &reqwest::Client) -> Result<OAuthToken, reqwest::Error> {
+        let res = client
+            .post(AUTH_OAUTH_URL)
+            .form(&[
+                ("grant_type", "client_credentials"),
+                ("client_id", &self.client_id),
+                ("client_secret", &self.client_secret),
+            ])
+            .send()
+            .await?;
+        let j: OAuthToken = res.json().await?;
+        let _ = j
+            .expires_at
+            .set(Utc::now() + chrono::Duration::seconds(j.expires_in))
+            .expect("Failed to set expires_at");
+        Ok(j)
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct OAuthToken {
+    pub token_type: String,
+    pub expires_in: i64,
+    pub access_token: String,
+    #[serde(skip)]
+    pub expires_at: OnceLock<DateTime<Utc>>,
+}
+
+impl OAuthToken {
+    /// Returns `<bearer> <access_token>`
+    pub fn get_authz_header(&self) -> String {
+        format!("{} {}", self.token_type, self.access_token)
+    }
+
+    pub fn should_refresh(&self) -> bool {
+        *self.expires_at.get().unwrap() - chrono::TimeDelta::seconds(60) < Utc::now()
+    }
+}
+
 // first url to post to creds
 pub static AUTH_UBI_URL: &str = "https://public-ubiservices.ubi.com/v3/profiles/sessions";
 // second url to post audience to
@@ -146,6 +204,8 @@ pub static AUTH_UBI_URL2: &str =
 // dedicated server url to post audience to
 pub static AUTH_DEDI_URL: &str =
     "https://prod.trackmania.core.nadeo.online/v2/authentication/token/basic";
+// oauth machine-to-machine url to post id,sec to
+pub static AUTH_OAUTH_URL: &str = "https://api.trackmania.com/api/access_token";
 
 pub static AUTH_REFRESH_URL: &str =
     "https://prod.trackmania.core.nadeo.online/v2/authentication/token/refresh";
@@ -224,6 +284,8 @@ pub struct NadeoClient {
     req_times: RwLock<HeapRb<chrono::DateTime<chrono::Utc>>>,
     nb_reqs: RwLock<usize>,
     last_avg_req_per_sec: RwLock<f64>,
+    oauth_credentials: OnceLock<OAuthCredentials>,
+    oauth_token: RwLock<Option<OAuthToken>>,
 }
 
 impl NadeoApiClient for NadeoClient {
@@ -295,19 +357,26 @@ impl NadeoClient {
             req_times,
             nb_reqs: RwLock::new(0),
             last_avg_req_per_sec: RwLock::new(0.0),
+            oauth_credentials: OnceLock::new(),
+            oauth_token: RwLock::new(None),
         })
+    }
+
+    pub fn with_oauth(self, oauth: OAuthCredentials) -> Option<Self> {
+        self.oauth_credentials.set(oauth).ok()?;
+        Some(self)
     }
 
     pub async fn ensure_tokens_valid(&self) {
         let mut core_token = self.core_token.write().await;
         if core_token.is_access_expired() || core_token.can_refresh() {
-            println!("Core token expired, refreshing");
+            info!("Core token expired, refreshing");
             core_token.run_refresh(&self.client).await;
         }
 
         let mut live_token = self.live_token.write().await;
         if live_token.is_access_expired() || live_token.can_refresh() {
-            println!("Live token expired, refreshing");
+            info!("Live token expired, refreshing");
             live_token.run_refresh(&self.client).await;
         }
     }
@@ -317,7 +386,7 @@ impl NadeoClient {
         let mut req_times = self.req_times.write().await;
         let now = now_dt();
         // if we have made less than 500 requests, just push the current time
-        if !req_times.is_full() {
+        if req_times.occupied_len() < 50 {
             // update avg req per sec
             *self.last_avg_req_per_sec.write().await = match req_times.try_peek() {
                 Some(oldest) => {
@@ -361,6 +430,37 @@ impl NadeoClient {
     }
 }
 
+impl OAuthApiClient for NadeoClient {
+    async fn get_oauth_token(&self) -> Result<OAuthToken, String> {
+        let oauth = self
+            .oauth_credentials
+            .get()
+            .ok_or("No oauth credentials".to_string())?;
+        let cached_token: Option<OAuthToken> = self.oauth_token.read().await.as_ref().cloned();
+        match cached_token {
+            Some(token) => {
+                if !token.should_refresh() {
+                    return Ok(token);
+                }
+                let new_token = oauth
+                    .run_login(&self.client)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let _ = self.oauth_token.write().await.replace(new_token.clone());
+                Ok(new_token)
+            }
+            None => {
+                let token = oauth
+                    .run_login(&self.client)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                self.oauth_token.write().await.replace(token.clone());
+                Ok(token)
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum NadeoAudience {
     Core,
@@ -369,7 +469,7 @@ pub enum NadeoAudience {
 }
 pub use NadeoAudience::*;
 
-use crate::client::NadeoApiClient;
+use crate::{client::NadeoApiClient, oauth::OAuthApiClient};
 
 impl NadeoAudience {
     pub fn get_audience_string(&self) -> &str {
@@ -578,14 +678,14 @@ impl NadeoToken {
         self.access_token = body["accessToken"].as_str().unwrap().to_string();
         if body["refreshToken"].is_null() {
             // refresh token not returned, keep old one
-            println!(
+            warn!(
                 "Refresh token not returned for audience {:?}",
                 self.audience
             );
         } else {
             // todo, test
             self.refresh_token = body["refreshToken"].as_str().unwrap().to_string();
-            println!("Updated refresh token for audience {:?}", self.audience);
+            warn!("Updated refresh token for audience {:?}", self.audience);
         }
 
         #[cfg(test)]

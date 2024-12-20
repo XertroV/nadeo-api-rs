@@ -1,4 +1,8 @@
-use std::{collections::HashMap, error::Error, sync::OnceLock};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    error::Error,
+    sync::OnceLock,
+};
 
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
@@ -40,6 +44,7 @@ pub struct Zone {
     pub parentId: Option<String>,
     pub timestamp: String,
     pub zoneId: String,
+    pub depth: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,10 +59,11 @@ impl ZoneTree {
         let mut z = HashMap::new();
         let mut c = HashMap::new();
         let mut world_id = String::new();
-        for zone in zones {
+        for mut zone in zones {
             z.insert(zone.zoneId.clone(), zone.clone());
             if zone.name == "World" {
                 world_id = zone.zoneId.clone();
+                zone.depth = Some(0);
             }
             if let Some(parent) = zone.parentId {
                 c.entry(parent)
@@ -68,6 +74,35 @@ impl ZoneTree {
         if world_id.is_empty() {
             panic!("No World zone found");
         }
+        let mut edge = vec![world_id.clone()];
+        let mut visited = HashSet::new();
+        while !edge.is_empty() {
+            let mut new_edge = Vec::new();
+            for zone_id in edge {
+                if let Some(children) = c.get(&zone_id) {
+                    for child in children {
+                        if visited.contains(child) {
+                            continue;
+                        }
+                        visited.insert(child);
+                        new_edge.push(child.clone());
+                        let child_depth = z
+                            .get(&zone_id)
+                            .expect(&format!("has key: {} (child: {})", zone_id, child))
+                            .depth
+                            .expect(&format!("has key depth: {} (child: {})", zone_id, child))
+                            + 1;
+                        if let Some(node) = z.get_mut(child) {
+                            node.depth = Some(child_depth);
+                        } else {
+                            panic!("Child zone not found: {}", child);
+                        }
+                    }
+                }
+            }
+            edge = new_edge;
+        }
+
         Self {
             world_id,
             zones: z,
@@ -81,6 +116,21 @@ impl ZoneTree {
 
     pub fn get_children(&self, zone_id: &str) -> Option<&Vec<String>> {
         self.children.get(zone_id)
+    }
+
+    pub fn get_country_or_higher(&self, zone_id: &str) -> Option<&Zone> {
+        let mut id = zone_id;
+        while let Some(zone) = self.get_zone(id) {
+            if zone.depth.unwrap() <= 2 {
+                return Some(zone);
+            }
+            if let Some(parent) = &zone.parentId {
+                id = parent;
+            } else {
+                break;
+            }
+        }
+        None
     }
 }
 
