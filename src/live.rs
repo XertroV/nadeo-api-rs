@@ -217,7 +217,9 @@ pub struct MapInfo {
     pub public: bool,
     pub favorite: bool,
     pub playable: bool,
+    /// usually (always?) ""
     pub mapStyle: String,
+    /// Typically "TM_Race"
     pub mapType: String,
     pub collectionName: String,
 }
@@ -300,7 +302,8 @@ pub struct MapGroupLeaderboard_TopEntry {
     pub zoneId: String,
     pub zoneName: String,
     pub position: i32,
-    pub score: u32,
+    /// Can be negative if map has secret records
+    pub score: i32,
 }
 
 /// TOTD/Royal response types
