@@ -280,6 +280,11 @@ impl BatcherLbPosByTime {
         self.queued.read().await.nb_in_progress
     }
 
+    pub async fn get_batch_size_avg(&self) -> (f64, usize) {
+        let q = self.queued.read().await;
+        (q.avg_batch_size, q.nb_batches)
+    }
+
     pub async fn run_batch<T: LiveApiClient>(
         &self,
         api: &T,
@@ -350,6 +355,8 @@ pub struct BatcherLbPosByTimeQueue {
     pub queue: HashMap<String, Vec<(i32, oneshot::Sender<ScoreToPos>)>>,
     pub nb_queued: usize,
     pub nb_in_progress: usize,
+    pub avg_batch_size: f64,
+    pub nb_batches: usize,
 }
 
 impl BatcherLbPosByTimeQueue {
@@ -358,6 +365,8 @@ impl BatcherLbPosByTimeQueue {
             queue: HashMap::new(),
             nb_queued: 0,
             nb_in_progress: 0,
+            avg_batch_size: 0.0,
+            nb_batches: 0,
         }
     }
 
@@ -396,7 +405,15 @@ impl BatcherLbPosByTimeQueue {
                 }
             }
         }
+        self.update_avg_batch_size(ret.len());
         ret
+    }
+
+    fn update_avg_batch_size(&mut self, batch_size: usize) {
+        self.nb_batches += 1;
+        self.avg_batch_size = (self.avg_batch_size * (self.nb_batches - 1) as f64
+            + batch_size as f64)
+            / self.nb_batches as f64;
     }
 }
 
@@ -729,6 +746,7 @@ mod tests {
             ("DeepDip2__The_Storm_Is_Here", NonZero::new(1).unwrap()),
             ("PrometheusByXertroVFtArcher", NonZero::new(47391).unwrap()),
             ("PrometheusByXertroVFtArcher", NonZero::new(48391).unwrap()),
+            ("PrometheusByXertroVFtArcher", NonZero::new(48220).unwrap()),
             (
                 "DeepDip2__The_Storm_Is_Here",
                 NonZero::new(60000 * 50).unwrap(),

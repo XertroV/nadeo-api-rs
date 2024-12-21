@@ -431,6 +431,10 @@ impl NadeoClient {
         *self.nb_reqs.read().await
     }
 
+    pub fn get_batcher(&self) -> &BatcherLbPosByTime {
+        &self.batcher_lb_pos_by_time
+    }
+
     pub(crate) async fn check_start_batcher_lb_pos_by_time_loop(&'static self) {
         if self.batcher_lb_pos_by_time.has_loop_started()
             || self.batcher_lb_pos_by_time.set_loop_started().is_err()
@@ -449,10 +453,13 @@ impl NadeoClient {
                 if nb_queued < 50 {
                     tokio::time::sleep(std::time::Duration::from_millis(19)).await;
                 }
-                match self.batcher_lb_pos_by_time.run_batch(self).await {
-                    Ok(_) => (),
-                    Err(e) => {
-                        warn!("Error in batcher_lb_pos_by_time: {:?}", e);
+                // clear out queue
+                while self.batcher_lb_pos_by_time.nb_queued().await > 0 {
+                    match self.batcher_lb_pos_by_time.run_batch(self).await {
+                        Ok(_) => (),
+                        Err(e) => {
+                            warn!("Error in batcher_lb_pos_by_time: {:?}", e);
+                        }
                     }
                 }
             }
