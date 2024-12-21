@@ -4,6 +4,7 @@ use std::{
     sync::OnceLock,
 };
 
+use chrono::{DateTime, NaiveDateTime, Utc};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +33,42 @@ pub trait CoreApiClient: NadeoApiClient {
         }
         Ok(ZONES_INFO.get().unwrap())
     }
+
+    /// Get players' zone details
+    ///
+    /// <https://webservices.openplanet.dev/core/accounts/zones>
+    ///
+    /// https://prod.trackmania.core.nadeo.online/accounts/zones/?accountIdList={accountIdList}
+    async fn get_user_zones<T: Into<String> + Clone>(
+        &self,
+        player_ids: &[T],
+    ) -> Result<HashMap<String, PlayerZone>, Box<dyn Error + Send + Sync>> {
+        let mut zones = HashMap::new();
+        let player_ids = player_ids
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect::<Vec<String>>()
+            .join(",");
+        let j = self
+            .run_core_get(&format!("accounts/zones/?accountIdList={}", player_ids))
+            .await?;
+        let j = j.as_array().ok_or("Response was not an array")?;
+        for data in j {
+            let pz = serde_json::from_value::<PlayerZone>(data.clone())?;
+            zones.insert(pz.account_id.clone(), pz);
+        }
+        Ok(zones)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerZone {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "zoneId")]
+    pub zone_id: String,
+    pub timestamp: String,
 }
 
 impl CoreApiClient for NadeoClient {}
@@ -59,17 +96,17 @@ impl ZoneTree {
         let mut z = HashMap::new();
         let mut c = HashMap::new();
         let mut world_id = String::new();
-        for mut zone in zones {
-            z.insert(zone.zoneId.clone(), zone.clone());
+        for mut zone in zones.into_iter() {
             if zone.name == "World" {
                 world_id = zone.zoneId.clone();
                 zone.depth = Some(0);
             }
-            if let Some(parent) = zone.parentId {
+            if let Some(parent) = zone.parentId.clone() {
                 c.entry(parent)
                     .or_insert_with(Vec::new)
                     .push(zone.zoneId.clone());
             }
+            z.insert(zone.zoneId.clone(), zone);
         }
         if world_id.is_empty() {
             panic!("No World zone found");
@@ -159,11 +196,17 @@ mod tests {
         let _zt2 = client.get_zone_tree().await.unwrap();
         let _t3 = std::time::Instant::now();
         assert!(_zt2.zones.len() > 1000);
-        println!("World: {:#?}", _zt2.get_zone(&_zt2.world_id).unwrap());
-        println!(
-            "Children: {:#?}",
-            _zt2.get_children(&_zt2.world_id).unwrap()
-        );
-        // dbg!(zt);
+        println!("World: {:?}", _zt2.get_zone(&_zt2.world_id).unwrap());
+        println!("Children: {:?}", _zt2.get_children(&_zt2.world_id).unwrap());
+
+        let user_zones = client
+            .get_user_zones(&[
+                "5b4d42f4-c2de-407d-b367-cbff3fe817bc",
+                "0a2d1bc0-4aaa-4374-b2db-3d561bdab1c9",
+            ])
+            .await
+            .unwrap();
+        println!("{:?}", user_zones);
+        assert_eq!(user_zones.len(), 2);
     }
 }

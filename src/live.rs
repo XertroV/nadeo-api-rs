@@ -1,8 +1,11 @@
 // API calls for the Live API
 
+use ahash::{HashMap, HashMapExt, HashSet};
+use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::error::Error;
+use std::{error::Error, num::NonZero, sync::OnceLock, vec};
+use tokio::sync::{oneshot, RwLock};
 
 use crate::{auth::NadeoClient, client::*};
 
@@ -76,23 +79,40 @@ pub trait LiveApiClient: NadeoApiClient {
     /// <https://webservices.openplanet.dev/live/leaderboards/position>
     ///
     /// Note: different groups are supported by the API but not this method.
-    /// Note for future: "When using a different groupUid, make sure you're only referencing currently open leaderboards. Maps with closed leaderboards will not be included in the response.""
+    ///
+    /// Warning: duplicate uids with different scores is not supported by the API.
     ///
     /// calls `api/token/leaderboard/group/map?scores[{mapUid}]={score}`
-    async fn get_records_by_time(
+    async fn get_lb_positions_by_time(
         &self,
-        uid_scores: &[(&str, i32)],
+        uid_scores: &[(&str, NonZero<u32>)],
+    ) -> Result<Vec<RecordsByTime>, Box<dyn Error>> {
+        self.get_lb_positions_by_time_group(uid_scores, "Personal_Best")
+            .await
+    }
+
+    /// <https://webservices.openplanet.dev/live/leaderboards/position>
+    ///
+    /// When using a different groupUid, make sure you're only referencing currently open leaderboards. Maps with closed leaderboards will not be included in the response.
+    ///
+    /// Warning: duplicate uids with different scores is not supported by the API.
+    ///
+    /// calls `api/token/leaderboard/group/map?scores[{mapUid}]={score}`
+    async fn get_lb_positions_by_time_group(
+        &self,
+        uid_scores: &[(&str, NonZero<u32>)],
+        group_uid: &str,
     ) -> Result<Vec<RecordsByTime>, Box<dyn Error>> {
         let mut query = vec![];
         for (uid, score) in uid_scores.iter() {
-            query.push((format!("scores[{}]", uid), score.to_string()));
+            query.push((format!("scores[{}]", uid), score.get().to_string()));
         }
 
         let mut body_maps = vec![];
         for (uid, _) in uid_scores.iter() {
             body_maps.push(json!({
                 "mapUid": uid,
-                "groupUid": "Personal_Best",
+                "groupUid": group_uid,
             }));
         }
         let body = json!({ "maps": body_maps });
@@ -104,6 +124,28 @@ pub trait LiveApiClient: NadeoApiClient {
         drop(permit);
         Ok(serde_json::from_value(j)?)
     }
+
+    /// <https://webservices.openplanet.dev/live/leaderboards/position>
+    ///
+    /// Uses `get_lb_positions_by_time` with an async batching system
+    /// to get the position on the leaderboard for a given score.
+    async fn get_lb_position_by_time_batched(
+        &'static self,
+        map_uid: &str,
+        score: NonZero<u32>,
+    ) -> Result<ScoreToPos, oneshot::error::RecvError> {
+        let ret_chan = self
+            .push_rec_position_req(map_uid, score.get() as i32)
+            .await;
+        Ok(ret_chan.await?)
+    }
+
+    /// Internal method supporting `get_lb_position_by_time_batched`
+    async fn push_rec_position_req(
+        &'static self,
+        map_uid: &str,
+        score: i32,
+    ) -> oneshot::Receiver<ScoreToPos>;
 
     /// <https://webservices.openplanet.dev/live/leaderboards/surround>
     ///
@@ -185,7 +227,180 @@ pub trait LiveApiClient: NadeoApiClient {
     }
 }
 
-impl LiveApiClient for NadeoClient {}
+impl LiveApiClient for NadeoClient {
+    async fn push_rec_position_req(
+        &'static self,
+        map_uid: &str,
+        score: i32,
+    ) -> oneshot::Receiver<ScoreToPos> {
+        let (tx, rx) = oneshot::channel();
+        self.batcher_lb_pos_by_time.push(map_uid, score, tx).await;
+        self.check_start_batcher_lb_pos_by_time_loop().await;
+        rx
+    }
+}
+
+// MARK: BatcherLbPosByTime
+
+pub struct BatcherLbPosByTime {
+    queued: RwLock<BatcherLbPosByTimeQueue>,
+    loop_started: OnceLock<bool>,
+}
+
+impl BatcherLbPosByTime {
+    pub fn new() -> Self {
+        Self {
+            queued: RwLock::new(BatcherLbPosByTimeQueue::new()),
+            loop_started: OnceLock::new(),
+        }
+    }
+
+    pub async fn push(&self, map_uid: &str, score: i32, ret_chan: oneshot::Sender<ScoreToPos>) {
+        let mut q = self.queued.write().await;
+        q.push(map_uid, score, ret_chan);
+    }
+
+    pub fn has_loop_started(&self) -> bool {
+        self.loop_started.get().is_some()
+    }
+
+    pub fn set_loop_started(&self) -> Result<(), bool> {
+        self.loop_started.set(true)
+    }
+
+    pub async fn is_empty(&self) -> bool {
+        self.queued.read().await.nb_queued == 0
+    }
+
+    pub async fn nb_queued(&self) -> usize {
+        self.queued.read().await.nb_queued
+    }
+
+    pub async fn nb_in_progress(&self) -> usize {
+        self.queued.read().await.nb_in_progress
+    }
+
+    pub async fn run_batch<T: LiveApiClient>(
+        &self,
+        api: &T,
+    ) -> Result<Vec<String>, Box<dyn Error>> {
+        // L1 start: queued -> in progress
+        let mut q = self.queued.write().await;
+        let batch = q.take_up_to(50);
+        let uids = batch
+            .iter()
+            .map(|(uid, _, _)| uid.clone())
+            .collect::<HashSet<String>>();
+
+        let batch_size = batch.len();
+        q.nb_in_progress += batch_size;
+        drop(q);
+        // L1 end
+
+        // Do the batch
+        let uid_scores: Vec<(&str, _)> = batch
+            .iter()
+            .map(|(uid, score, _)| (uid.as_str(), NonZero::new(*score as u32).unwrap()))
+            .collect();
+        let resp = api.get_lb_positions_by_time(&uid_scores).await?;
+        if resp.len() != batch_size {
+            warn!(
+                "[BatcherLbPosByTime] resp.len() != batch_size: {} != {}",
+                resp.len(),
+                batch_size
+            );
+        }
+        // let b_lookup = batch.into_iter().map(|(uid, time, sender)| (uid, (time, sender))).collect::<HashMap<String, (i32, oneshot::Sender<Option<i32>>)>>();
+        let r_lookup = resp
+            .into_iter()
+            .filter_map(|r| {
+                let pos = r.get_global_pos()?;
+                Some((r.mapUid, pos))
+            })
+            .collect::<HashMap<String, i32>>();
+
+        let mut uids = vec![];
+        for (uid, score, sender) in batch {
+            let pos = r_lookup.get(&uid).copied();
+            let _ = sender.send(ScoreToPos { score, pos });
+            uids.push(uid);
+        }
+
+        // L2 start: in progress -> done
+        let mut q = self.queued.write().await;
+        q.nb_in_progress -= batch_size;
+        drop(q);
+        // L2 end
+        Ok(uids)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ScoreToPos {
+    pub score: i32,
+    pub pos: Option<i32>,
+}
+impl ScoreToPos {
+    pub fn get_s_p(&self) -> (i32, Option<i32>) {
+        (self.score, self.pos)
+    }
+}
+
+pub struct BatcherLbPosByTimeQueue {
+    pub queue: HashMap<String, Vec<(i32, oneshot::Sender<ScoreToPos>)>>,
+    pub nb_queued: usize,
+    pub nb_in_progress: usize,
+}
+
+impl BatcherLbPosByTimeQueue {
+    pub fn new() -> Self {
+        Self {
+            queue: HashMap::new(),
+            nb_queued: 0,
+            nb_in_progress: 0,
+        }
+    }
+
+    pub fn push(&mut self, map_uid: &str, score: i32, ret_chan: oneshot::Sender<ScoreToPos>) {
+        self.nb_queued += 1;
+        self.queue
+            .entry(map_uid.to_string())
+            .or_insert_with(Vec::new)
+            .push((score, ret_chan));
+    }
+
+    pub fn take_up_to(&mut self, limit: usize) -> Vec<(String, i32, oneshot::Sender<ScoreToPos>)> {
+        let mut ret = vec![];
+        let mut to_rem = vec![];
+        for (map_uid, v) in self.queue.iter_mut() {
+            match v.pop() {
+                Some((score, ret_chan)) => {
+                    self.nb_queued -= 1;
+                    ret.push((map_uid.clone(), score, ret_chan));
+                }
+                None => {}
+            }
+            if v.is_empty() {
+                to_rem.push(map_uid.clone());
+            }
+            if ret.len() >= limit {
+                break;
+            }
+        }
+        for k in to_rem {
+            let v = self.queue.remove(&k);
+            if let Some(v) = v {
+                self.nb_queued -= v.len();
+                if v.len() > 0 {
+                    panic!("v.len() > 0: {}: {:?}", k, v);
+                }
+            }
+        }
+        ret
+    }
+}
+
+// MARK: Resp Types
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
@@ -203,10 +418,10 @@ pub struct MapInfo {
     pub name: String,
     pub author: String,
     pub submitter: String,
-    pub authorTime: i32,
-    pub goldTime: i32,
-    pub silverTime: i32,
-    pub bronzeTime: i32,
+    pub authorTime: i64,
+    pub goldTime: i64,
+    pub silverTime: i64,
+    pub bronzeTime: i64,
     pub nbLaps: i32,
     pub valid: bool,
     pub downloadUrl: String,
@@ -252,7 +467,7 @@ pub struct RecordsSurround_TopEntry {
     pub timestamp: Option<i64>,
 }
 
-/// get_records_by_time response types
+/// get_lb_positions_by_time response types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
 pub struct RecordsByTime {
@@ -260,6 +475,12 @@ pub struct RecordsByTime {
     pub mapUid: String,
     pub score: i32,
     pub zones: Vec<RecordsByTime_Zone>,
+}
+
+impl RecordsByTime {
+    pub fn get_global_pos(&self) -> Option<i32> {
+        Some(self.zones.get(0)?.ranking.position)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,7 +524,7 @@ pub struct MapGroupLeaderboard_TopEntry {
     pub zoneName: String,
     pub position: i32,
     /// Can be negative if map has secret records
-    pub score: i32,
+    pub score: i64,
 }
 
 /// TOTD/Royal response types
@@ -355,10 +576,13 @@ pub struct MonthlyCampaign_Media {
 
 #[cfg(test)]
 mod tests {
-    use std::u32;
+    use std::{future::Future, u32};
 
     use crate::test_helpers::*;
     use auth::{NadeoClient, UserAgentDetails};
+    use futures::stream::{FuturesOrdered, FuturesUnordered};
+    use lazy_static::lazy_static;
+    use oneshot::error::RecvError;
 
     use super::*;
     use crate::*;
@@ -461,7 +685,7 @@ mod tests {
         println!("Surround: {:?}", res);
     }
 
-    // test get_records_by_time
+    // test get_lb_positions_by_time
     #[ignore]
     #[tokio::test]
     async fn test_records_by_time() {
@@ -471,13 +695,65 @@ mod tests {
             .await
             .unwrap();
         let res = client
-            .get_records_by_time(&[
-                ("PrometheusByXertroVFtArcher", 47391),
-                ("DeepDip2__The_Storm_Is_Here", 60000 * 50),
+            .get_lb_positions_by_time(&[
+                ("PrometheusByXertroVFtArcher", NonZero::new(47391).unwrap()),
+                (
+                    "DeepDip2__The_Storm_Is_Here",
+                    NonZero::new(60000 * 50).unwrap(),
+                ),
             ])
             .await
             .unwrap();
         println!("Records by Time: {:?}", res);
+    }
+
+    lazy_static! {
+        static ref CLIENT: OnceLock<NadeoClient> = OnceLock::new();
+    }
+
+    // test get_lb_positions_by_time batcher
+    // #[ignore]
+    #[tokio::test]
+    async fn test_records_by_time_batched() {
+        let creds = get_test_creds();
+        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
+        let client: NadeoClient = NadeoClient::create(creds, user_agent_auto!(&email), 10)
+            .await
+            .unwrap();
+        if CLIENT.set(client).is_err() {
+            panic!("CLIENT already set");
+        }
+        let client = CLIENT.get().unwrap();
+        let to_get = vec![
+            ("PrometheusByXertroVFtArcher", NonZero::new(1000).unwrap()),
+            ("DeepDip2__The_Storm_Is_Here", NonZero::new(1).unwrap()),
+            ("PrometheusByXertroVFtArcher", NonZero::new(47391).unwrap()),
+            ("PrometheusByXertroVFtArcher", NonZero::new(48391).unwrap()),
+            (
+                "DeepDip2__The_Storm_Is_Here",
+                NonZero::new(60000 * 50).unwrap(),
+            ),
+        ];
+
+        fn run_and_time<F: Future<Output = Result<ScoreToPos, RecvError>> + Send + 'static>(
+            f: F,
+        ) -> tokio::task::JoinHandle<ScoreToPos> {
+            tokio::spawn(async move {
+                let start = std::time::Instant::now();
+                let r = f.await.unwrap();
+                let end = std::time::Instant::now();
+                println!("Time: {:?}; Res: {:?}", end - start, r);
+                r
+            })
+        }
+
+        let reqs = to_get
+            .into_iter()
+            .map(|s| client.get_lb_position_by_time_batched(s.0, s.1))
+            .map(run_and_time)
+            .collect::<FuturesUnordered<_>>();
+        let r = futures::future::join_all(reqs).await;
+        println!("Results: {:?}", r);
     }
 
     #[ignore]

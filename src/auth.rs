@@ -286,6 +286,7 @@ pub struct NadeoClient {
     last_avg_req_per_sec: RwLock<f64>,
     oauth_credentials: OnceLock<OAuthCredentials>,
     oauth_token: RwLock<Option<OAuthToken>>,
+    pub(crate) batcher_lb_pos_by_time: BatcherLbPosByTime,
 }
 
 impl NadeoApiClient for NadeoClient {
@@ -359,6 +360,7 @@ impl NadeoClient {
             last_avg_req_per_sec: RwLock::new(0.0),
             oauth_credentials: OnceLock::new(),
             oauth_token: RwLock::new(None),
+            batcher_lb_pos_by_time: BatcherLbPosByTime::new(),
         })
     }
 
@@ -428,6 +430,34 @@ impl NadeoClient {
     pub async fn get_nb_reqs(&self) -> usize {
         *self.nb_reqs.read().await
     }
+
+    pub(crate) async fn check_start_batcher_lb_pos_by_time_loop(&'static self) {
+        if self.batcher_lb_pos_by_time.has_loop_started()
+            || self.batcher_lb_pos_by_time.set_loop_started().is_err()
+        {
+            return;
+        }
+        tokio::spawn(async move {
+            loop {
+                let nb_queued = self.batcher_lb_pos_by_time.nb_queued().await;
+                // if nothing queued, sleep and repeat
+                if nb_queued == 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(29)).await;
+                    continue;
+                }
+                // if less than the limit (50), sleep a little to let more come in
+                if nb_queued < 50 {
+                    tokio::time::sleep(std::time::Duration::from_millis(19)).await;
+                }
+                match self.batcher_lb_pos_by_time.run_batch(self).await {
+                    Ok(_) => (),
+                    Err(e) => {
+                        warn!("Error in batcher_lb_pos_by_time: {:?}", e);
+                    }
+                }
+            }
+        });
+    }
 }
 
 impl OAuthApiClient for NadeoClient {
@@ -469,7 +499,7 @@ pub enum NadeoAudience {
 }
 pub use NadeoAudience::*;
 
-use crate::{client::NadeoApiClient, oauth::OAuthApiClient};
+use crate::{client::NadeoApiClient, live::BatcherLbPosByTime, oauth::OAuthApiClient};
 
 impl NadeoAudience {
     pub fn get_audience_string(&self) -> &str {

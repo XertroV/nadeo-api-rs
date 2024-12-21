@@ -22,11 +22,25 @@ pub trait OAuthApiClient: NadeoApiClient {
     /// <https://webservices.openplanet.dev/oauth/reference/accounts/id-to-name>
     ///
     /// calls `GET 	https://api.trackmania.com/api/display-names?accountId[]={accountId}`
-    async fn get_display_names(
+    async fn get_display_names<T>(
         &self,
-        account_ids: Vec<String>,
-    ) -> Result<HashMap<String, String>, String> {
-        let mut account_ids = account_ids.join("&accountId[]=");
+        account_ids: &[T],
+    ) -> Result<HashMap<String, String>, String>
+    where
+        T: Into<String> + Clone,
+    {
+        match account_ids.len() {
+            0 => return Ok(HashMap::new()),
+            x if x > 50 => return Err("Too many account ids (max 50)".to_string()),
+            _ => (),
+        };
+
+        let mut account_ids = account_ids
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect::<Vec<String>>()
+            .join("&accountId[]=");
         account_ids.insert_str(0, "accountId[]=");
 
         let (token, permit) = self.get_oauth_permit_and_token().await?;
@@ -78,9 +92,9 @@ mod tests {
             .with_oauth(OAuthCredentials::new(&client_id, &client_secret))
             .unwrap();
         let names_hm = client
-            .get_display_names(vec![
-                "5b4d42f4-c2de-407d-b367-cbff3fe817bc".to_string(),
-                "0a2d1bc0-4aaa-4374-b2db-3d561bdab1c9".to_string(),
+            .get_display_names(&vec![
+                "5b4d42f4-c2de-407d-b367-cbff3fe817bc",
+                "0a2d1bc0-4aaa-4374-b2db-3d561bdab1c9",
             ])
             .await
             .unwrap();
