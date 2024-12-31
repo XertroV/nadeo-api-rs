@@ -323,6 +323,7 @@ impl NadeoApiClient for NadeoClient {
 }
 
 // proper defaults: 1.0, 1500
+// pub const MAX_REQ_PER_SEC: f64 = 7.0;
 pub const MAX_REQ_PER_SEC: f64 = 3.0;
 pub const HIT_MAX_REQ_PER_SEC_WAIT: u64 = 500;
 
@@ -388,7 +389,7 @@ impl NadeoClient {
         let mut req_times = self.req_times.write().await;
         let now = now_dt();
         // if we have made less than 500 requests, just push the current time
-        if req_times.occupied_len() < 50 {
+        if req_times.occupied_len() < self.max_concurrent_requests {
             // update avg req per sec
             *self.last_avg_req_per_sec.write().await = match req_times.try_peek() {
                 Some(oldest) => {

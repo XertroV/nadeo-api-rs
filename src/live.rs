@@ -2,6 +2,7 @@
 
 use ahash::{HashMap, HashMapExt, HashSet};
 use log::warn;
+use reqwest::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{error::Error, num::NonZero, sync::OnceLock, vec};
@@ -15,6 +16,19 @@ fn query_lo(length: u32, offset: u32) -> Vec<(&'static str, String)> {
         ("length", length.to_string()),
         ("offset", offset.to_string()),
     ]
+}
+
+#[derive(Debug)]
+pub enum NadeoError {
+    ArgsErr(String),
+    ReqwestError(reqwest::Error),
+    SerdeJsonError(serde_json::Error, String),
+}
+
+impl From<reqwest::Error> for NadeoError {
+    fn from(e: reqwest::Error) -> Self {
+        NadeoError::ReqwestError(e)
+    }
 }
 
 /// API calls for the Live API
@@ -134,8 +148,11 @@ pub trait LiveApiClient: NadeoApiClient {
         map_uid: &str,
         score: NonZero<u32>,
     ) -> Result<ScoreToPos, oneshot::error::RecvError> {
+        if score.get() >= 2147483648 {
+            warn!("score >= 2147483648: {}", map_uid);
+        }
         let ret_chan = self
-            .push_rec_position_req(map_uid, score.get() as i32)
+            .push_rec_position_req(map_uid, score.get() as i64)
             .await;
         Ok(ret_chan.await?)
     }
@@ -144,7 +161,7 @@ pub trait LiveApiClient: NadeoApiClient {
     async fn push_rec_position_req(
         &'static self,
         map_uid: &str,
-        score: i32,
+        score: i64,
     ) -> oneshot::Receiver<ScoreToPos>;
 
     /// <https://webservices.openplanet.dev/live/leaderboards/surround>
@@ -214,16 +231,13 @@ pub trait LiveApiClient: NadeoApiClient {
     /// <https://webservices.openplanet.dev/live/maps/info-multiple>
     ///
     /// calls `api/token/map/get-multiple?mapUidList={mapUidList}`
-    async fn get_map_info_multiple(&self, map_uids: &[&str]) -> Result<MapInfos, Box<dyn Error>> {
+    async fn get_map_info_multiple(&self, map_uids: &[&str]) -> Result<MapInfos, NadeoError> {
         if map_uids.len() > 100 {
-            return Err("map_uids length must be <= 100".into());
+            return Err(NadeoError::ArgsErr("map_uids length must be <= 100".into()));
         }
-        let j = self
-            .run_live_get(
-                &("api/token/map/get-multiple?mapUidList=".to_string() + &map_uids.join(",")),
-            )
-            .await?;
-        Ok(serde_json::from_value(j)?)
+        let url = "api/token/map/get-multiple?mapUidList=".to_string() + &map_uids.join(",");
+        let j = self.run_live_get(&url).await?;
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonError(e, url))?)
     }
 }
 
@@ -231,7 +245,7 @@ impl LiveApiClient for NadeoClient {
     async fn push_rec_position_req(
         &'static self,
         map_uid: &str,
-        score: i32,
+        score: i64,
     ) -> oneshot::Receiver<ScoreToPos> {
         let (tx, rx) = oneshot::channel();
         self.batcher_lb_pos_by_time.push(map_uid, score, tx).await;
@@ -255,7 +269,7 @@ impl BatcherLbPosByTime {
         }
     }
 
-    pub async fn push(&self, map_uid: &str, score: i32, ret_chan: oneshot::Sender<ScoreToPos>) {
+    pub async fn push(&self, map_uid: &str, score: i64, ret_chan: oneshot::Sender<ScoreToPos>) {
         let mut q = self.queued.write().await;
         q.push(map_uid, score, ret_chan);
     }
@@ -342,17 +356,17 @@ impl BatcherLbPosByTime {
 
 #[derive(Debug, Clone)]
 pub struct ScoreToPos {
-    pub score: i32,
+    pub score: i64,
     pub pos: Option<i32>,
 }
 impl ScoreToPos {
-    pub fn get_s_p(&self) -> (i32, Option<i32>) {
+    pub fn get_s_p(&self) -> (i64, Option<i32>) {
         (self.score, self.pos)
     }
 }
 
 pub struct BatcherLbPosByTimeQueue {
-    pub queue: HashMap<String, Vec<(i32, oneshot::Sender<ScoreToPos>)>>,
+    pub queue: HashMap<String, Vec<(i64, oneshot::Sender<ScoreToPos>)>>,
     pub nb_queued: usize,
     pub nb_in_progress: usize,
     pub avg_batch_size: f64,
@@ -370,7 +384,7 @@ impl BatcherLbPosByTimeQueue {
         }
     }
 
-    pub fn push(&mut self, map_uid: &str, score: i32, ret_chan: oneshot::Sender<ScoreToPos>) {
+    pub fn push(&mut self, map_uid: &str, score: i64, ret_chan: oneshot::Sender<ScoreToPos>) {
         self.nb_queued += 1;
         self.queue
             .entry(map_uid.to_string())
@@ -378,7 +392,7 @@ impl BatcherLbPosByTimeQueue {
             .push((score, ret_chan));
     }
 
-    pub fn take_up_to(&mut self, limit: usize) -> Vec<(String, i32, oneshot::Sender<ScoreToPos>)> {
+    pub fn take_up_to(&mut self, limit: usize) -> Vec<(String, i64, oneshot::Sender<ScoreToPos>)> {
         let mut ret = vec![];
         let mut to_rem = vec![];
         for (map_uid, v) in self.queue.iter_mut() {
@@ -490,7 +504,7 @@ pub struct RecordsSurround_TopEntry {
 pub struct RecordsByTime {
     pub groupUid: String,
     pub mapUid: String,
-    pub score: i32,
+    pub score: i64,
     pub zones: Vec<RecordsByTime_Zone>,
 }
 

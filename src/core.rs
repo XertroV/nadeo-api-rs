@@ -44,6 +44,10 @@ pub trait CoreApiClient: NadeoApiClient {
         player_ids: &[T],
     ) -> Result<HashMap<String, PlayerZone>, Box<dyn Error + Send + Sync>> {
         let mut zones = HashMap::new();
+        if player_ids.is_empty() {
+            panic!("No player ids given");
+            return Ok(zones);
+        }
         let player_ids = player_ids
             .iter()
             .cloned()
@@ -53,7 +57,15 @@ pub trait CoreApiClient: NadeoApiClient {
         let j = self
             .run_core_get(&format!("accounts/zones/?accountIdList={}", player_ids))
             .await?;
-        let j = j.as_array().ok_or("Response was not an array")?;
+        let j = j
+            .as_array()
+            .ok_or_else(|| {
+                panic!(
+                    "Response was not an array. ids = {}, j = {:?}",
+                    player_ids, j
+                )
+            })
+            .unwrap();
         for data in j {
             let pz = serde_json::from_value::<PlayerZone>(data.clone())?;
             zones.insert(pz.account_id.clone(), pz);
@@ -168,6 +180,10 @@ impl ZoneTree {
             }
         }
         None
+    }
+
+    pub fn world(&self) -> Option<&Zone> {
+        self.get_zone(&self.world_id)
     }
 }
 

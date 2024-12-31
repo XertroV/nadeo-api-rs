@@ -1,3 +1,4 @@
+use log::debug;
 use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_LENGTH, LOCATION};
 pub use reqwest::{Error as RqError, RequestBuilder, Response};
 pub use serde_json::Value;
@@ -13,7 +14,19 @@ pub enum MonthlyCampaignType {
 pub async fn run_req<'a>(
     (req, permit): (RequestBuilder, SemaphorePermit<'a>),
 ) -> Result<Value, RqError> {
-    let r = req.send().await?.json().await?;
+    let start = std::time::Instant::now();
+    // let r = req.send().await?.json().await?;
+    let (client, req) = req.build_split();
+    let req = req?;
+    let url = req.url().to_string();
+    let resp = client.execute(req).await?;
+    let resp = resp.error_for_status()?;
+    let r = resp.json().await?;
+    debug!(
+        "Request took: {:.3} s ( URL = {} )",
+        start.elapsed().as_secs_f64(),
+        url
+    );
     drop(permit);
     Ok(r)
 }
