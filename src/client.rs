@@ -1,5 +1,5 @@
 use log::debug;
-use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_LENGTH, LOCATION};
+use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_LENGTH};
 pub use reqwest::{Error as RqError, RequestBuilder, Response};
 pub use serde_json::Value;
 use tokio::sync::{SemaphorePermit, TryLockError};
@@ -11,6 +11,7 @@ pub enum MonthlyCampaignType {
     TOTD,
 }
 
+/// Run a rate-limited request
 pub async fn run_req<'a>(
     (req, permit): (RequestBuilder, SemaphorePermit<'a>),
 ) -> Result<Value, RqError> {
@@ -48,8 +49,8 @@ pub trait NadeoApiClient {
 
     async fn aget_auth_token(&self, audience: NadeoAudience) -> String;
 
-    fn get_auth_header(&self, audience: NadeoAudience) -> String {
-        format!("nadeo_v1 t={}", &self.get_auth_token(audience).unwrap())
+    fn get_auth_header(&self, audience: NadeoAudience) -> Result<String, TryLockError> {
+        Ok(format!("nadeo_v1 t={}", &self.get_auth_token(audience)?))
     }
 
     async fn aget_auth_header(&self, audience: NadeoAudience) -> String {

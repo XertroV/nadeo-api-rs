@@ -2,7 +2,7 @@
 //!
 //! Use [NadeoClient::create](auth::NadeoClient::create) to create a new client.
 //!
-//! You will also need to create [NadeoCredentials](auth::NadeoCredentials) and [UserAgentDetails](auth::UserAgentDetails) (see [auth::UserAgentDetails::new_autodetect])
+//! You will also need to create [NadeoCredentials](auth::NadeoCredentials) and [UserAgentDetails](auth::UserAgentDetails) (see [user_agent_auto] and [user_agent_auto_ver])
 //!
 //! API methods are defined on traits: [live::LiveApiClient], [meet::MeetApiClient], [core::CoreApiClient].
 

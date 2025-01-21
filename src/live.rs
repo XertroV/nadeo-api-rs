@@ -1,13 +1,14 @@
 // API calls for the Live API
 
-use ahash::{HashMap, HashMapExt, HashSet};
+use ahash::{HashMap, HashMapExt};
 use log::warn;
-use reqwest::Request;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
-use std::{error::Error, num::NonZero, sync::OnceLock, vec};
+use std::{fmt, marker::PhantomData, num::NonZero, sync::OnceLock, vec};
 use tokio::sync::{oneshot, RwLock};
 
+use crate::auth::LoginError;
 use crate::{auth::NadeoClient, client::*};
 
 /// Returns query params for length and offset
@@ -22,12 +23,26 @@ fn query_lo(length: u32, offset: u32) -> Vec<(&'static str, String)> {
 pub enum NadeoError {
     ArgsErr(String),
     ReqwestError(reqwest::Error),
-    SerdeJsonError(serde_json::Error, String),
+    SerdeJsonWithURL(serde_json::Error, String),
+    SerdeJson(serde_json::Error),
+    Login(LoginError),
 }
 
 impl From<reqwest::Error> for NadeoError {
     fn from(e: reqwest::Error) -> Self {
         NadeoError::ReqwestError(e)
+    }
+}
+
+impl From<serde_json::Error> for NadeoError {
+    fn from(e: serde_json::Error) -> Self {
+        NadeoError::SerdeJson(e)
+    }
+}
+
+impl From<LoginError> for NadeoError {
+    fn from(e: LoginError) -> Self {
+        NadeoError::Login(e)
     }
 }
 
@@ -39,7 +54,7 @@ pub trait LiveApiClient: NadeoApiClient {
         ty: MonthlyCampaignType,
         length: u32,
         offset: u32,
-    ) -> Result<MonthlyCampaign_List, Box<dyn Error>> {
+    ) -> Result<MonthlyCampaign_List, NadeoError> {
         let mut query: Vec<(&str, String)> = query_lo(length, offset);
         if matches!(ty, MonthlyCampaignType::Royal) {
             query.push(("royal", "true".to_string()));
@@ -61,7 +76,7 @@ pub trait LiveApiClient: NadeoApiClient {
         only_world: bool,
         length: u32,
         offset: u32,
-    ) -> Result<MapGroupLeaderboard, Box<dyn Error>> {
+    ) -> Result<MapGroupLeaderboard, NadeoError> {
         let mut query = query_lo(length, offset);
         query.push(("onlyWorld", only_world.to_string()));
         let (rb, permit) = self
@@ -85,7 +100,7 @@ pub trait LiveApiClient: NadeoApiClient {
         only_world: bool,
         length: u32,
         offset: u32,
-    ) -> Result<MapGroupLeaderboard, Box<dyn Error>> {
+    ) -> Result<MapGroupLeaderboard, NadeoError> {
         self.get_map_group_leaderboard("Personal_Best", map_uid, only_world, length, offset)
             .await
     }
@@ -100,7 +115,7 @@ pub trait LiveApiClient: NadeoApiClient {
     async fn get_lb_positions_by_time(
         &self,
         uid_scores: &[(&str, NonZero<u32>)],
-    ) -> Result<Vec<RecordsByTime>, Box<dyn Error>> {
+    ) -> Result<Vec<RecordsByTime>, NadeoError> {
         self.get_lb_positions_by_time_group(uid_scores, "Personal_Best")
             .await
     }
@@ -116,7 +131,7 @@ pub trait LiveApiClient: NadeoApiClient {
         &self,
         uid_scores: &[(&str, NonZero<u32>)],
         group_uid: &str,
-    ) -> Result<Vec<RecordsByTime>, Box<dyn Error>> {
+    ) -> Result<Vec<RecordsByTime>, NadeoError> {
         let mut query = vec![];
         for (uid, score) in uid_scores.iter() {
             query.push((format!("scores[{}]", uid), score.get().to_string()));
@@ -143,6 +158,7 @@ pub trait LiveApiClient: NadeoApiClient {
     ///
     /// Uses `get_lb_positions_by_time` with an async batching system
     /// to get the position on the leaderboard for a given score.
+    /// It is highly efficient in terms of API calls provided the calls are initiated within a short (20ms) time frame.
     async fn get_lb_position_by_time_batched(
         &'static self,
         map_uid: &str,
@@ -175,7 +191,7 @@ pub trait LiveApiClient: NadeoApiClient {
         upper: i32,
         score: u32,
         only_world: bool,
-    ) -> Result<RecordsSurround, Box<dyn Error>> {
+    ) -> Result<RecordsSurround, NadeoError> {
         let (rb, permit) = self
             .live_get(&format!(
                 "api/token/leaderboard/group/{group_uid}/map/{map_uid}/surround/{lower}/{upper}"
@@ -206,7 +222,7 @@ pub trait LiveApiClient: NadeoApiClient {
         upper: i32,
         score: u32,
         only_world: bool,
-    ) -> Result<RecordsSurround, Box<dyn Error>> {
+    ) -> Result<RecordsSurround, NadeoError> {
         self.get_group_surround("Personal_Best", map_uid, lower, upper, score, only_world)
             .await
     }
@@ -216,7 +232,7 @@ pub trait LiveApiClient: NadeoApiClient {
     /// calls `api/token/map/{mapUid}`
     ///
     /// Returns `None` if the map isn't uploaded
-    async fn get_map_info(&self, map_uid: &str) -> Result<Option<MapInfo>, Box<dyn Error>> {
+    async fn get_map_info(&self, map_uid: &str) -> Result<Option<MapInfo>, NadeoError> {
         let (rb, permit) = self.live_get(&format!("api/token/map/{map_uid}")).await;
         let resp = rb.send().await?;
         if resp.status().as_u16() == 404 {
@@ -237,7 +253,211 @@ pub trait LiveApiClient: NadeoApiClient {
         }
         let url = "api/token/map/get-multiple?mapUidList=".to_string() + &map_uids.join(",");
         let j = self.run_live_get(&url).await?;
-        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonError(e, url))?)
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    /// <https://webservices.openplanet.dev/live/clubs/activities>
+    ///
+    /// calls `/api/token/club/{clubId}/activity?length=3&offset=0&active=true`
+    async fn get_club_activities(
+        &self,
+        club_id: i32,
+        length: u32,
+        offset: u32,
+        active: bool,
+    ) -> Result<ClubActivityList, NadeoError> {
+        let mut query = query_lo(length, offset);
+        query.push(("active", active.to_string()));
+        let url = format!("api/token/club/{}/activity", club_id);
+        let (rb, permit) = self.live_get(&url).await;
+        let j: Value = rb.query(&query).send().await?.json().await?;
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    /// <https://webservices.openplanet.dev/live/clubs/club>
+    ///
+    /// calls `/api/token/club/{clubId}`
+    async fn get_club_info(&self, club_id: i32) -> Result<ClubInfo, NadeoError> {
+        let url = format!("api/token/club/{}", club_id);
+        let (rb, permit) = self.live_get(&url).await;
+        let j: Value = rb.send().await?.json().await?;
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    /// <https://webservices.openplanet.dev/live/clubs/campaign-by-id>
+    ///
+    /// calls `/api/token/club/{clubId}/campaign/{campaignId}`
+    async fn get_club_campaign_by_id(
+        &self,
+        club_id: i32,
+        campaign_id: i32,
+    ) -> Result<ClubCampaignById, NadeoError> {
+        let url = format!("api/token/club/{}/campaign/{}", club_id, campaign_id);
+        let (rb, permit) = self.live_get(&url).await;
+        let j: Value = rb.send().await?.json().await?;
+        eprintln!("{:?}", j);
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    /// <https://webservices.openplanet.dev/live/clubs/campaigns>
+    ///
+    /// calls `api/token/club/campaign?length={length}&offset={offset}&name={name}`
+    async fn get_club_campaigns(
+        &self,
+        // club_id: i32,
+        length: u32,
+        offset: u32,
+        name: Option<&str>,
+    ) -> Result<ClubCampaignList, NadeoError> {
+        let mut query = query_lo(length, offset);
+        if let Some(name) = name {
+            query.push(("name", name.to_string()));
+        }
+        let url = format!("api/token/club/campaign");
+        let (rb, permit) = self.live_get(&url).await;
+        let j: Value = rb.query(&query).send().await?.json().await?;
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    /// <https://webservices.openplanet.dev/live/clubs/rooms>
+    ///
+    /// calls `api/token/club/room?length={length}&offset={offset}&name={name}`
+    async fn get_club_rooms(
+        &self,
+        length: u32,
+        offset: u32,
+        name: Option<&str>,
+    ) -> Result<ClubRoomList, NadeoError> {
+        let mut query = query_lo(length, offset);
+        if let Some(name) = name {
+            query.push(("name", name.to_string()));
+        }
+        let url = format!("api/token/club/room");
+        let (rb, permit) = self.live_get(&url).await;
+        let j: Value = rb.query(&query).send().await?.json().await?;
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    /// <https://webservices.openplanet.dev/live/clubs/room-by-id>
+    ///
+    /// calls `/api/token/club/{clubId}/room/{roomId}`
+    async fn get_club_room_by_id(
+        &self,
+        club_id: i32,
+        activity_id: i32,
+    ) -> Result<ClubRoom, NadeoError> {
+        let url = format!("api/token/club/{}/room/{}", club_id, activity_id);
+        let (rb, permit) = self.live_get(&url).await;
+        let j: Value = rb.send().await?.json().await?;
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    async fn edit_club_room_by_id(
+        &self,
+        club_id: i32,
+        activity_id: i32,
+        body: &ClubRoom_Room_ForEdit,
+    ) -> Result<ClubRoom, NadeoError> {
+        let url = format!("api/token/club/{}/room/{}/edit", club_id, activity_id);
+        let body =
+            serde_json::to_value(body).map_err(|e| NadeoError::SerdeJsonWithURL(e, url.clone()))?;
+        let (rb, permit) = self.live_post(&url, &body).await;
+        let j: Value = rb.send().await?.json().await?;
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    async fn create_club_room(
+        &self,
+        club_id: i32,
+        body: &ClubRoom_Room_ForEdit,
+    ) -> Result<ClubRoom, NadeoError> {
+        let url = format!("api/token/club/{}/room/create", club_id);
+        let body =
+            serde_json::to_value(body).map_err(|e| NadeoError::SerdeJsonWithURL(e, url.clone()))?;
+        let (rb, permit) = self.live_post(&url, &body).await;
+        let j: Value = rb.send().await?.json().await?;
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    /// <https://webservices.openplanet.dev/live/clubs/activities>
+    ///
+    /// calls `/api/token/club/{clubId}/activity?length={length}&offset={offset}&active={active}`
+    ///
+    /// `active` can only be None if the account is an admin of the club; must be Some(true) if not a member.
+    async fn get_club_activity_list(
+        &self,
+        club_id: i32,
+        length: u32,
+        offset: u32,
+        active: Option<bool>,
+    ) -> Result<ActivityList, NadeoError> {
+        let mut query = query_lo(length, offset);
+        if let Some(active) = active {
+            query.push(("active", active.to_string()));
+        }
+        let url = format!("api/token/club/{}/activity", club_id);
+        let (rb, permit) = self.live_get(&url).await;
+        let j: Value = rb.query(&query).send().await?.json().await?;
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    async fn edit_club_activity(
+        &self,
+        club_id: i32,
+        activity_id: i32,
+        public: Option<bool>,
+        active: Option<bool>,
+    ) -> Result<Value, NadeoError> {
+        let url = format!("api/token/club/{}/activity/{}/edit", club_id, activity_id);
+        let mut body = serde_json::Value::Object(Default::default());
+        if let Some(public) = public {
+            body["public"] = serde_json::Value::Bool(public);
+        }
+        if let Some(active) = active {
+            body["active"] = serde_json::Value::Bool(active);
+        }
+        let (rb, permit) = self.live_post(&url, &body).await;
+        let j: Value = rb.send().await?.json().await?;
+        drop(permit);
+        Ok(j)
+    }
+
+    /// <https://webservices.openplanet.dev/live/clubs/clubs>
+    ///
+    /// calls `/api/token/club?length={length}&offset={offset}&name={name}`
+    async fn get_clubs(
+        &self,
+        length: u32,
+        offset: u32,
+        name: Option<&str>,
+    ) -> Result<ClubList, NadeoError> {
+        let mut query = query_lo(length, offset);
+        if let Some(name) = name {
+            query.push(("name", name.to_string()));
+        }
+        let url = format!("api/token/club");
+        let (rb, permit) = self.live_get(&url).await;
+        let j: Value = rb.query(&query).send().await?.json().await?;
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    async fn get_clubs_mine(&self, length: u32, offset: u32) -> Result<ClubList, NadeoError> {
+        let query = query_lo(length, offset);
+        let url = format!("api/token/club/mine");
+        let (rb, permit) = self.live_get(&url).await;
+        let j: Value = rb.query(&query).send().await?.json().await?;
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
     }
 }
 
@@ -256,6 +476,8 @@ impl LiveApiClient for NadeoClient {
 
 // MARK: BatcherLbPosByTime
 
+/// High performance batcher for getting leaderboard positions by time.
+/// Should be used via [LiveApiClient::get_lb_position_by_time_batched].
 pub struct BatcherLbPosByTime {
     queued: RwLock<BatcherLbPosByTimeQueue>,
     loop_started: OnceLock<bool>,
@@ -299,17 +521,14 @@ impl BatcherLbPosByTime {
         (q.avg_batch_size, q.nb_batches)
     }
 
-    pub async fn run_batch<T: LiveApiClient>(
-        &self,
-        api: &T,
-    ) -> Result<Vec<String>, Box<dyn Error>> {
+    pub async fn run_batch<T: LiveApiClient>(&self, api: &T) -> Result<Vec<String>, NadeoError> {
         // L1 start: queued -> in progress
         let mut q = self.queued.write().await;
         let batch = q.take_up_to(50);
-        let uids = batch
-            .iter()
-            .map(|(uid, _, _)| uid.clone())
-            .collect::<HashSet<String>>();
+        // let uids = batch
+        //     .iter()
+        //     .map(|(uid, _, _)| uid.clone())
+        //     .collect::<HashSet<String>>();
 
         let batch_size = batch.len();
         q.nb_in_progress += batch_size;
@@ -605,13 +824,386 @@ pub struct MonthlyCampaign_Media {
     pub liveButtonForegroundUrl: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubActivityList {
+    pub activityList: Vec<ClubActivity>,
+    pub maxPage: i32,
+    pub itemCount: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubActivity {
+    pub id: i32,
+    pub name: String,
+    pub activityType: String,
+    pub activityId: i32,
+    pub targetActivityId: i32,
+    pub campaignId: i32,
+    pub position: i32,
+    pub public: bool,
+    pub active: bool,
+    pub externalId: i32,
+    pub featured: bool,
+    pub password: bool,
+    pub itemsCount: i32,
+    pub clubId: i32,
+    pub editionTimestamp: i64,
+    pub creatorAccountId: String,
+    pub latestEditorAccountId: String,
+    pub mediaUrl: String,
+    pub mediaUrlPngLarge: String,
+    pub mediaUrlPngMedium: String,
+    pub mediaUrlPngSmall: String,
+    pub mediaUrlDds: String,
+    pub mediaTheme: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubInfo {
+    pub id: i32,
+    pub name: String,
+    pub tag: String,
+    pub description: String,
+    pub authorAccountId: String,
+    pub latestEditorAccountId: String,
+    pub iconUrl: String,
+    pub iconUrlPngLarge: String,
+    pub iconUrlPngMedium: String,
+    pub iconUrlPngSmall: String,
+    pub iconUrlDds: String,
+    pub logoUrl: String,
+    pub decalUrl: String,
+    pub decalUrlPngLarge: String,
+    pub decalUrlPngMedium: String,
+    pub decalUrlPngSmall: String,
+    pub decalUrlDds: String,
+    pub screen16x9Url: String,
+    pub screen16x9UrlPngLarge: String,
+    pub screen16x9UrlPngMedium: String,
+    pub screen16x9UrlPngSmall: String,
+    pub screen16x9UrlDds: String,
+    pub screen64x41Url: String,
+    pub screen64x41UrlPngLarge: String,
+    pub screen64x41UrlPngMedium: String,
+    pub screen64x41UrlPngSmall: String,
+    pub screen64x41UrlDds: String,
+    pub decalSponsor4x1Url: String,
+    pub decalSponsor4x1UrlPngLarge: String,
+    pub decalSponsor4x1UrlPngMedium: String,
+    pub decalSponsor4x1UrlPngSmall: String,
+    pub decalSponsor4x1UrlDds: String,
+    pub screen8x1Url: String,
+    pub screen8x1UrlPngLarge: String,
+    pub screen8x1UrlPngMedium: String,
+    pub screen8x1UrlPngSmall: String,
+    pub screen8x1UrlDds: String,
+    pub screen16x1Url: String,
+    pub screen16x1UrlPngLarge: String,
+    pub screen16x1UrlPngMedium: String,
+    pub screen16x1UrlPngSmall: String,
+    pub screen16x1UrlDds: String,
+    pub verticalUrl: String,
+    pub verticalUrlPngLarge: String,
+    pub verticalUrlPngMedium: String,
+    pub verticalUrlPngSmall: String,
+    pub verticalUrlDds: String,
+    pub backgroundUrl: String,
+    pub backgroundUrlJpgLarge: String,
+    pub backgroundUrlJpgMedium: String,
+    pub backgroundUrlJpgSmall: String,
+    pub backgroundUrlDds: String,
+    pub creationTimestamp: i64,
+    pub popularityLevel: i32,
+    pub state: String,
+    pub featured: bool,
+    pub walletUid: String,
+    pub metadata: String,
+    pub editionTimestamp: i64,
+    pub iconTheme: String,
+    pub decalTheme: String,
+    pub screen16x9Theme: String,
+    pub screen64x41Theme: String,
+    pub screen8x1Theme: String,
+    pub screen16x1Theme: String,
+    pub verticalTheme: String,
+    pub backgroundTheme: String,
+    pub verified: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubCampaignById {
+    pub clubDecalUrl: String,
+    pub campaignId: i32,
+    pub activityId: i32,
+    pub campaign: ClubCampaign,
+    pub popularityLevel: i32,
+    pub publicationTimestamp: i64,
+    pub creationTimestamp: i64,
+    pub creatorAccountId: String,
+    pub latestEditorAccountId: String,
+    pub id: i32,
+    pub clubId: i32,
+    pub clubName: String,
+    pub name: String,
+    pub mapsCount: i32,
+    pub mediaUrl: String,
+    pub mediaUrlPngLarge: String,
+    pub mediaUrlPngMedium: String,
+    pub mediaUrlPngSmall: String,
+    pub mediaUrlDds: String,
+    pub mediaTheme: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubCampaign {
+    pub id: i32,
+    pub seasonUid: String,
+    pub name: String,
+    pub color: String,
+    pub useCase: i32,
+    pub clubId: i32,
+    pub leaderboardGroupUid: String,
+    pub publicationTimestamp: i64,
+    pub startTimestamp: i64,
+    pub endTimestamp: i64,
+    pub rankingSentTimestamp: Option<i64>,
+    // pub year: Option<i32>,
+    // pub week: Option<i32>,
+    // pub day: Option<i32>,
+    // pub monthYear: Option<i32>,
+    // pub month: Option<i32>,
+    // pub monthDay: Option<i32>,
+    pub year: i32,
+    pub week: i32,
+    pub day: i32,
+    pub monthYear: i32,
+    pub month: i32,
+    pub monthDay: i32,
+    pub published: bool,
+    pub playlist: Vec<ClubCampaign_PlaylistEntry>,
+    pub latestSeasons: Vec<ClubCampaign_LatestSeason>,
+    pub categories: Vec<ClubCampaign_Category>,
+    pub media: ClubCampaign_Media,
+    pub editionTimestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubCampaign_PlaylistEntry {
+    pub id: i32,
+    pub position: i32,
+    pub mapUid: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubCampaign_LatestSeason {
+    pub uid: String,
+    pub name: String,
+    pub startTimestamp: i64,
+    pub endTimestamp: i64,
+    pub relativeStart: i64,
+    pub relativeEnd: i64,
+    pub campaignId: i32,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubCampaign_Category {
+    pub position: i32,
+    pub length: i32,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubCampaign_Media {
+    pub buttonBackgroundUrl: String,
+    pub buttonForegroundUrl: String,
+    pub decalUrl: String,
+    pub popUpBackgroundUrl: String,
+    pub popUpImageUrl: String,
+    pub liveButtonBackgroundUrl: String,
+    pub liveButtonForegroundUrl: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubCampaignList {
+    pub clubCampaignList: Vec<ClubCampaignById>,
+    pub maxPage: i32,
+    pub itemCount: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubRoomList {
+    pub clubRoomList: Vec<ClubRoom>,
+    pub maxPage: i32,
+    pub itemCount: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubRoom {
+    pub id: i32,
+    pub clubId: i32,
+    pub clubName: String,
+    pub nadeo: bool,
+    pub roomId: Option<i32>,
+    pub campaignId: Option<i32>,
+    pub playerServerLogin: Option<String>,
+    pub activityId: i32,
+    pub name: String,
+    pub room: ClubRoom_Room,
+    pub popularityLevel: i32,
+    pub creationTimestamp: i64,
+    pub creatorAccountId: String,
+    pub latestEditorAccountId: String,
+    pub password: bool,
+    pub mediaUrl: String,
+    pub mediaUrlPngLarge: String,
+    pub mediaUrlPngMedium: String,
+    pub mediaUrlPngSmall: String,
+    pub mediaUrlDds: String,
+    pub mediaTheme: String,
+    // pub maps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubRoom_Room {
+    pub id: Option<i32>,
+    pub name: String,
+    pub region: Option<String>,
+    pub serverAccountId: String,
+    pub maxPlayers: i32,
+    pub playerCount: i32,
+    pub maps: Vec<String>,
+    pub script: String,
+    pub scalable: bool,
+    #[serde(deserialize_with = "empty_list_or_map")]
+    pub scriptSettings: HashMap<String, ClubRoom_ScriptSetting>,
+    pub serverInfo: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubRoom_Room_ForEdit {
+    pub name: String,
+    pub region: String,
+    pub maxPlayersPerServer: i32,
+    pub maps: Vec<String>,
+    pub script: String,
+    pub scalable: bool,
+    /// cannot be changed after creation
+    pub password: bool,
+    pub settings: Vec<ClubRoom_ScriptSetting>,
+}
+
+fn empty_list_or_map<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Deserialize<'de> + Default,
+    D: Deserializer<'de>,
+{
+    struct EmptyListOrStruct<T>(PhantomData<fn() -> T>);
+    impl<'de, T> Visitor<'de> for EmptyListOrStruct<T>
+    where
+        T: Deserialize<'de> + Default,
+    {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("empty list or struct")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<T, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            if seq.next_element::<()>()?.is_some() {
+                Err(de::Error::invalid_length(1, &self))
+            } else {
+                Ok(Default::default())
+            }
+        }
+
+        fn visit_map<M>(self, map: M) -> Result<T, M::Error>
+        where
+            M: MapAccess<'de>,
+        {
+            Deserialize::deserialize(de::value::MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_any(EmptyListOrStruct(PhantomData))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubRoom_ScriptSetting {
+    pub key: String,
+    pub value: String,
+    pub r#type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ActivityList {
+    pub activityList: Vec<Activity>,
+    pub maxPage: i32,
+    pub itemCount: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct Activity {
+    pub id: i32,
+    pub name: String,
+    pub activityType: String,
+    pub activityId: i32,
+    pub targetActivityId: i32,
+    pub campaignId: i32,
+    pub position: i32,
+    pub public: bool,
+    pub active: bool,
+    pub externalId: i32,
+    pub featured: bool,
+    pub password: bool,
+    pub itemsCount: i32,
+    pub clubId: i32,
+    pub editionTimestamp: i64,
+    pub creatorAccountId: String,
+    pub latestEditorAccountId: String,
+    pub mediaUrl: String,
+    pub mediaUrlPngLarge: String,
+    pub mediaUrlPngMedium: String,
+    pub mediaUrlPngSmall: String,
+    pub mediaUrlDds: String,
+    pub mediaTheme: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubList {
+    pub clubList: Vec<ClubInfo>,
+    pub maxPage: u32,
+    pub clubCount: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use std::{future::Future, u32};
 
     use crate::test_helpers::*;
     use auth::{NadeoClient, UserAgentDetails};
-    use futures::stream::{FuturesOrdered, FuturesUnordered};
+    use futures::stream::FuturesUnordered;
     use lazy_static::lazy_static;
     use oneshot::error::RecvError;
 
@@ -667,7 +1259,7 @@ mod tests {
             );
         }
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        let mi2 = client.get_map_info(uids[0]).await.unwrap();
+        let _mi2 = client.get_map_info(uids[0]).await.unwrap();
         println!(
             "get_cached_avg_req_per_sec: {:?}",
             client.get_cached_avg_req_per_sec().await
@@ -831,5 +1423,114 @@ mod tests {
                 chrono::Utc::now()
             );
         }
+    }
+
+    const TEST_CLUB_ID: i32 = 46587;
+    const TEST_CAMPAIGN_ID: i32 = 38997;
+    const TEST_ROOM_ID: i32 = 287220;
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_get_club_campaigns() {
+        let creds = get_test_creds();
+        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
+            .await
+            .unwrap();
+        let res = client.get_club_campaigns(100, 4000, None).await.unwrap();
+        println!("Club Campaigns: {:?}", res);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_get_club_campaign_by_id() {
+        let creds = get_test_creds();
+        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
+            .await
+            .unwrap();
+        let res = client
+            .get_club_campaign_by_id(TEST_CLUB_ID, TEST_CAMPAIGN_ID)
+            .await
+            .unwrap();
+        println!("Club Campaign: {:?}", res);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_get_club_rooms() {
+        let creds = get_test_creds();
+        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
+            .await
+            .unwrap();
+        let res = client.get_club_rooms(10, 0, None).await.unwrap();
+        println!("Club Rooms: {:?}", res);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_get_club_room_by_id() {
+        let creds = get_test_creds();
+        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
+            .await
+            .unwrap();
+        let res = client
+            .get_club_room_by_id(TEST_CLUB_ID, TEST_ROOM_ID)
+            .await
+            .unwrap();
+        println!("Club Room: {:?}", res);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_get_club_info() {
+        let creds = get_test_creds();
+        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
+            .await
+            .unwrap();
+        let res = client.get_club_info(TEST_CLUB_ID).await.unwrap();
+        println!("Club Info: {:?}", res);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_get_club_activity_list() {
+        let creds = get_test_creds();
+        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
+            .await
+            .unwrap();
+        let res = client
+            .get_club_activity_list(TEST_CLUB_ID, 10, 0, Some(true))
+            .await
+            .unwrap();
+        println!("Club Activity List: {:?}", res);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_get_clubs() {
+        let creds = get_test_creds();
+        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
+            .await
+            .unwrap();
+        let res = client.get_clubs(10, 0, None).await.unwrap();
+        println!("Clubs: {:?}", res);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_get_clubs_mine() {
+        let creds = get_test_ubi_creds();
+        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
+            .await
+            .unwrap();
+        let res = client.get_clubs_mine(10, 0).await.unwrap();
+        println!("Clubs: {:?}", res);
     }
 }

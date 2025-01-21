@@ -1,15 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{auth::NadeoClient, client::NadeoApiClient};
-use std::error::Error;
+use crate::{auth::NadeoClient, client::NadeoApiClient, live::NadeoError};
 
 /// API calls for the Meet API
 pub trait MeetApiClient: NadeoApiClient {
     /// <https://webservices.openplanet.dev/meet/cup-of-the-day/current>
     ///
     /// Get the current Cup of the Day. Sometimes the status will be 204 No Content. (Indicated by Ok(None))
-    async fn get_cup_of_the_day(&self) -> Result<Option<CupOfTheDay>, Box<dyn Error>> {
+    async fn get_cup_of_the_day(&self) -> Result<Option<CupOfTheDay>, NadeoError> {
         let (rb, permit) = self.meet_get("api/cup-of-the-day/current").await;
         let resp = rb.send().await?;
         if resp.status().as_u16() == 204 {
@@ -91,11 +90,8 @@ pub struct Challenge {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::Value;
-
     use crate::{
         auth::{NadeoClient, UserAgentDetails},
-        client::NadeoApiClient,
         meet::MeetApiClient,
         test_helpers::get_test_creds,
         user_agent_auto,

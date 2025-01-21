@@ -1,7 +1,4 @@
-use std::{
-    error::Error,
-    sync::{Arc, OnceLock},
-};
+use std::sync::{Arc, OnceLock};
 
 use base64::prelude::*;
 use chrono::{DateTime, TimeZone, Utc};
@@ -13,10 +10,7 @@ use reqwest::{
 use ringbuf::{traits::*, HeapRb};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::{
-    select,
-    sync::{RwLock, Semaphore, SemaphorePermit, TryLockError},
-};
+use tokio::sync::{RwLock, Semaphore, SemaphorePermit, TryLockError};
 
 // Handle nadeo authentication
 /// Credentials for nadeo services -- create via [::dedicated_server](NadeoCredentials::dedicated_server) or [::ubisoft](NadeoCredentials::ubisoft)
@@ -222,12 +216,26 @@ pub struct UserAgentDetails {
     pub version: String,
 }
 
+/// Create a UserAgentDetails struct with the app name and version autodetected from the cargo manifest.
+///
+/// Usage:
+/// ```
+/// use nadeo_api_rs::{user_agent_auto, auth::UserAgentDetails};
+/// let ua = user_agent_auto!("my@email");
+/// ```
 #[macro_export]
 macro_rules! user_agent_auto {
     ($email:expr) => {
         UserAgentDetails::new(env!("CARGO_CRATE_NAME"), $email, env!("CARGO_PKG_VERSION"))
     };
 }
+/// Create a UserAgentDetails struct with the version autodetected from the cargo manifest.
+///
+/// Usage:
+/// ```
+/// use nadeo_api_rs::{user_agent_auto_ver, auth::UserAgentDetails};
+/// let ua = user_agent_auto_ver!("myapp", "my@email");
+/// ```
 #[macro_export]
 macro_rules! user_agent_auto_ver {
     ($appname:expr, $email:expr) => {
@@ -236,26 +244,6 @@ macro_rules! user_agent_auto_ver {
 }
 
 impl UserAgentDetails {
-    // /// Detects app_name and version from cargo manifest
-    // pub fn new_autodetect(contact_email: &str) -> Self {
-    //     let app_name = crate_name!().to_string();
-    //     let version = env!("CARGO_PKG_VERSION").to_string();
-    //     Self {
-    //         app_name,
-    //         contact_email: contact_email.to_string(),
-    //         version,
-    //     }
-    // }
-
-    // pub fn new_autover(app_name: &str, contact_email: &str) -> Self {
-    //     let version = env!("CARGO_PKG_VERSION").to_string();
-    //     Self {
-    //         app_name: app_name.to_string(),
-    //         contact_email: contact_email.to_string(),
-    //         version,
-    //     }
-    // }
-
     pub fn new(app_name: &str, contact_email: &str, version: &str) -> Self {
         Self {
             app_name: app_name.to_string(),
@@ -272,6 +260,7 @@ impl UserAgentDetails {
     }
 }
 
+/// Main client for nadeo services
 #[derive()]
 pub struct NadeoClient {
     credentials: NadeoCredentials,
@@ -296,7 +285,8 @@ impl NadeoApiClient for NadeoClient {
         &self.client
     }
 
-    /// prefer aget_auth_token
+    /// Prefer: aget_auth_token
+    /// Get the auth token for the given audience (used to construct the header)
     fn get_auth_token(&self, audience: NadeoAudience) -> Result<String, TryLockError> {
         Ok(match audience {
             Core => self.core_token.try_read()?.access_token.clone(),
@@ -304,6 +294,7 @@ impl NadeoApiClient for NadeoClient {
         })
     }
 
+    /// Get the auth token for the given audience (used to construct the header)
     async fn aget_auth_token(&self, audience: NadeoAudience) -> String {
         match audience {
             Core => self.core_token.read().await.access_token.clone(),
@@ -324,7 +315,7 @@ impl NadeoApiClient for NadeoClient {
 
 // proper defaults: 1.0, 1500
 // pub const MAX_REQ_PER_SEC: f64 = 7.0;
-pub const MAX_REQ_PER_SEC: f64 = 3.0;
+pub const MAX_REQ_PER_SEC: f64 = 1.0;
 pub const HIT_MAX_REQ_PER_SEC_WAIT: u64 = 500;
 
 impl NadeoClient {
@@ -336,7 +327,7 @@ impl NadeoClient {
         credentials: NadeoCredentials,
         user_agent: UserAgentDetails,
         max_concurrent_requests: usize,
-    ) -> Result<Self, Box<dyn Error>> {
+    ) -> Result<Self, NadeoError> {
         let req_semaphore = Arc::new(Semaphore::new(max_concurrent_requests));
         let client = reqwest::Client::builder()
             .user_agent(user_agent.get_user_agent_string())
@@ -507,7 +498,11 @@ pub enum NadeoAudience {
 }
 pub use NadeoAudience::*;
 
-use crate::{client::NadeoApiClient, live::BatcherLbPosByTime, oauth::OAuthApiClient};
+use crate::{
+    client::NadeoApiClient,
+    live::{BatcherLbPosByTime, NadeoError},
+    oauth::OAuthApiClient,
+};
 
 impl NadeoAudience {
     pub fn get_audience_string(&self) -> &str {
@@ -755,7 +750,6 @@ fn print_token_stuff(token: &NadeoToken) {
 
 #[cfg(test)]
 mod tests {
-    use std::error::Error;
 
     use crate::test_helpers::*;
 
@@ -763,7 +757,7 @@ mod tests {
 
     #[ignore]
     #[tokio::test]
-    async fn test_login() -> Result<(), Box<dyn Error>> {
+    async fn test_login() -> Result<(), NadeoError> {
         let cred = get_test_creds();
         let client = reqwest::Client::new();
         let res = cred.run_login(&client).await?;
@@ -773,7 +767,7 @@ mod tests {
 
     #[ignore]
     #[tokio::test]
-    async fn test_ubi_login() -> Result<(), Box<dyn Error>> {
+    async fn test_ubi_login() -> Result<(), NadeoError> {
         let cred = get_test_ubi_creds();
         let client = reqwest::Client::new();
         let res = cred.run_login(&client).await?;
@@ -782,7 +776,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_file_size() -> Result<(), Box<dyn Error>> {
+    async fn test_get_file_size() -> Result<(), NadeoError> {
         let cred = get_test_creds();
         let nc = NadeoClient::create(cred, user_agent_auto!("email"), 2).await?;
         let size = nc
@@ -797,7 +791,7 @@ mod tests {
 
     #[ignore]
     #[tokio::test]
-    async fn test_print_token_times() -> Result<(), Box<dyn Error>> {
+    async fn test_print_token_times() -> Result<(), NadeoError> {
         let cred = get_test_creds();
         let client = reqwest::Client::new();
         let tokens = cred.run_login(&client).await?;

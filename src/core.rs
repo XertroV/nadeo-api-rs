@@ -1,14 +1,13 @@
+///! # Core API Calls
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    error::Error,
+    collections::{HashMap, HashSet},
     sync::OnceLock,
 };
 
-use chrono::{DateTime, NaiveDateTime, Utc};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 
-use crate::{auth::NadeoClient, client::NadeoApiClient};
+use crate::{auth::NadeoClient, client::NadeoApiClient, live::NadeoError};
 
 lazy_static! {
     static ref ZONES_INFO: OnceLock<ZoneTree> = OnceLock::new();
@@ -19,17 +18,17 @@ pub trait CoreApiClient: NadeoApiClient {
     /// Get a list of zones
     ///
     /// <https://webservices.openplanet.dev/core/meta/zones>
-    async fn get_zones(&self) -> Result<Vec<Zone>, Box<dyn Error>> {
+    async fn get_zones(&self) -> Result<Vec<Zone>, NadeoError> {
         let j = self.run_core_get("zones").await?;
         Ok(serde_json::from_value(j)?)
     }
 
     /// Get the zone tree -- cached!
-    async fn get_zone_tree(&self) -> Result<&ZoneTree, Box<dyn Error>> {
+    async fn get_zone_tree(&self) -> Result<&ZoneTree, NadeoError> {
         if ZONES_INFO.get().is_none() {
             let zones = self.get_zones().await?;
             let zt = ZoneTree::new(zones);
-            ZONES_INFO.set(zt).unwrap();
+            let _ = ZONES_INFO.set(zt);
         }
         Ok(ZONES_INFO.get().unwrap())
     }
@@ -38,15 +37,15 @@ pub trait CoreApiClient: NadeoApiClient {
     ///
     /// <https://webservices.openplanet.dev/core/accounts/zones>
     ///
-    /// https://prod.trackmania.core.nadeo.online/accounts/zones/?accountIdList={accountIdList}
+    /// calls `/accounts/zones/?accountIdList={accountIdList}`
     async fn get_user_zones<T: Into<String> + Clone>(
         &self,
         player_ids: &[T],
-    ) -> Result<HashMap<String, PlayerZone>, Box<dyn Error + Send + Sync>> {
+    ) -> Result<HashMap<String, PlayerZone>, NadeoError> {
         let mut zones = HashMap::new();
         if player_ids.is_empty() {
             panic!("No player ids given");
-            return Ok(zones);
+            // return Ok(zones);
         }
         let player_ids = player_ids
             .iter()
@@ -96,6 +95,7 @@ pub struct Zone {
     pub depth: Option<u32>,
 }
 
+/// The zone tree, constructed and cached from the list of zones.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZoneTree {
     pub world_id: String,
@@ -167,6 +167,8 @@ impl ZoneTree {
         self.children.get(zone_id)
     }
 
+    /// If the zone is a region, province, state, etc, ascend the tree to get the country.
+    /// If the zone is a country, continent, or world, return it.
     pub fn get_country_or_higher(&self, zone_id: &str) -> Option<&Zone> {
         let mut id = zone_id;
         while let Some(zone) = self.get_zone(id) {
@@ -182,8 +184,8 @@ impl ZoneTree {
         None
     }
 
-    pub fn world(&self) -> Option<&Zone> {
-        self.get_zone(&self.world_id)
+    pub fn world(&self) -> &Zone {
+        self.get_zone(&self.world_id).unwrap()
     }
 }
 
