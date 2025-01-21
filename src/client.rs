@@ -1,5 +1,5 @@
 use log::debug;
-use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_LENGTH};
+use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
 pub use reqwest::{Error as RqError, RequestBuilder, Response};
 pub use serde_json::Value;
 use tokio::sync::{SemaphorePermit, TryLockError};
@@ -62,6 +62,9 @@ pub trait NadeoApiClient {
         hv.set_sensitive(true);
         hv
     }
+
+    async fn get_account_wsid(&self) -> String;
+    async fn get_account_display_name(&self) -> String;
 
     async fn oauth_get<'a>(
         &self,
@@ -153,6 +156,16 @@ pub trait NadeoApiClient {
                 .post(&format!("{}{}", LIVE_URL, path))
                 .header(AUTHORIZATION, self.get_auth_header_value(Live).await)
                 .json(body),
+            self.rate_limit().await,
+        )
+    }
+    async fn live_post_no_body(&self, path: &str) -> (RequestBuilder, SemaphorePermit) {
+        (
+            self.get_client()
+                .await
+                .post(&format!("{}{}", LIVE_URL, path))
+                .header(AUTHORIZATION, self.get_auth_header_value(Live).await)
+                .header(CONTENT_TYPE, "application/json"),
             self.rate_limit().await,
         )
     }

@@ -26,6 +26,7 @@ pub enum NadeoError {
     SerdeJsonWithURL(serde_json::Error, String),
     SerdeJson(serde_json::Error),
     Login(LoginError),
+    NotFound,
 }
 
 impl From<reqwest::Error> for NadeoError {
@@ -256,25 +257,6 @@ pub trait LiveApiClient: NadeoApiClient {
         Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
     }
 
-    /// <https://webservices.openplanet.dev/live/clubs/activities>
-    ///
-    /// calls `/api/token/club/{clubId}/activity?length=3&offset=0&active=true`
-    async fn get_club_activities(
-        &self,
-        club_id: i32,
-        length: u32,
-        offset: u32,
-        active: bool,
-    ) -> Result<ClubActivityList, NadeoError> {
-        let mut query = query_lo(length, offset);
-        query.push(("active", active.to_string()));
-        let url = format!("api/token/club/{}/activity", club_id);
-        let (rb, permit) = self.live_get(&url).await;
-        let j: Value = rb.query(&query).send().await?.json().await?;
-        drop(permit);
-        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
-    }
-
     /// <https://webservices.openplanet.dev/live/clubs/club>
     ///
     /// calls `/api/token/club/{clubId}`
@@ -392,13 +374,13 @@ pub trait LiveApiClient: NadeoApiClient {
     /// calls `/api/token/club/{clubId}/activity?length={length}&offset={offset}&active={active}`
     ///
     /// `active` can only be None if the account is an admin of the club; must be Some(true) if not a member.
-    async fn get_club_activity_list(
+    async fn get_club_activities(
         &self,
         club_id: i32,
         length: u32,
         offset: u32,
         active: Option<bool>,
-    ) -> Result<ActivityList, NadeoError> {
+    ) -> Result<ClubActivityList, NadeoError> {
         let mut query = query_lo(length, offset);
         if let Some(active) = active {
             query.push(("active", active.to_string()));
@@ -458,6 +440,42 @@ pub trait LiveApiClient: NadeoApiClient {
         let j: Value = rb.query(&query).send().await?.json().await?;
         drop(permit);
         Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    async fn become_club_member(
+        &self,
+        club_id: i32,
+        // account_id: &str,
+    ) -> Result<ClubMember, NadeoError> {
+        let url = format!("api/token/club/{}/member/create", club_id);
+        // let body = json!({ "accountId": account_id });
+        let (rb, permit) = self.live_post_no_body(&url).await;
+        let j: Value = rb.send().await?.json().await?;
+        eprintln!("become member resp: {:?}", j);
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    async fn get_club_member(
+        &self,
+        club_id: i32,
+        member_wsid: &str,
+    ) -> Result<ClubMember, NadeoError> {
+        let url = format!("api/token/club/{}/member/{}", club_id, member_wsid);
+        // let body = json!({ "accountId": member_wsid });
+        let (rb, permit) = self.live_get(&url).await;
+        let j: Value = rb.send().await?.json().await?;
+        drop(permit);
+        Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
+    }
+
+    // returns "Club member deleted" on success
+    async fn leave_club(&self, club_id: i32, member_wsid: &str) -> Result<String, NadeoError> {
+        let url = format!("api/token/club/{}/member/{}/delete", club_id, member_wsid);
+        let (rb, permit) = self.live_post_no_body(&url).await;
+        let r = rb.send().await?.text().await?;
+        drop(permit);
+        Ok(r)
     }
 }
 
@@ -651,6 +669,49 @@ impl BatcherLbPosByTimeQueue {
 }
 
 // MARK: Resp Types
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct ClubMember {
+    pub accountId: String,
+    pub clubId: i32,
+    pub role: String,
+    pub creationTimestamp: i64,
+    pub vip: bool,
+    pub moderator: bool,
+    pub hasFeatured: bool,
+    pub pin: bool,
+    pub useTag: bool,
+}
+
+impl ClubMember {
+    /// returns true if the user has joined the club
+    pub fn is_a_member(&self) -> bool {
+        self.role != ""
+    }
+
+    /// returns true if the user role in the club is Member
+    pub fn is_member(&self) -> bool {
+        self.role == "Member"
+    }
+
+    /// returns true if the user role in the club is Admin
+    pub fn is_admin(&self) -> bool {
+        self.role == "Admin"
+    }
+
+    pub fn is_creator(&self) -> bool {
+        self.role == "Creator"
+    }
+
+    pub fn is_any_admin(&self) -> bool {
+        self.is_admin() || self.is_creator()
+    }
+
+    pub fn is_limited_admin(&self) -> bool {
+        self.is_creator()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_camel_case_types, non_snake_case)]
@@ -1153,40 +1214,98 @@ pub struct ClubRoom_ScriptSetting {
     pub r#type: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(non_camel_case_types, non_snake_case)]
-pub struct ActivityList {
-    pub activityList: Vec<Activity>,
-    pub maxPage: i32,
-    pub itemCount: i32,
-}
+impl ClubRoom_ScriptSetting {
+    pub fn text(key: &str, value: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            value: value.to_string(),
+            r#type: "text".to_string(),
+        }
+    }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(non_camel_case_types, non_snake_case)]
-pub struct Activity {
-    pub id: i32,
-    pub name: String,
-    pub activityType: String,
-    pub activityId: i32,
-    pub targetActivityId: i32,
-    pub campaignId: i32,
-    pub position: i32,
-    pub public: bool,
-    pub active: bool,
-    pub externalId: i32,
-    pub featured: bool,
-    pub password: bool,
-    pub itemsCount: i32,
-    pub clubId: i32,
-    pub editionTimestamp: i64,
-    pub creatorAccountId: String,
-    pub latestEditorAccountId: String,
-    pub mediaUrl: String,
-    pub mediaUrlPngLarge: String,
-    pub mediaUrlPngMedium: String,
-    pub mediaUrlPngSmall: String,
-    pub mediaUrlDds: String,
-    pub mediaTheme: String,
+    pub fn integer(key: &str, value: i32) -> Self {
+        Self {
+            key: key.to_string(),
+            value: value.to_string(),
+            r#type: "integer".to_string(),
+        }
+    }
+
+    pub fn boolean(key: &str, value: bool) -> Self {
+        Self {
+            key: key.to_string(),
+            value: value.to_string(),
+            r#type: "boolean".to_string(),
+        }
+    }
+
+    pub fn float(key: &str, value: f64) -> Self {
+        Self {
+            key: key.to_string(),
+            value: value.to_string(),
+            r#type: "float".to_string(),
+        }
+    }
+
+    pub fn time_limit(value: i32) -> Self {
+        Self::integer("S_TimeLimit", value)
+    }
+
+    pub fn chat_time(value: i32) -> Self {
+        Self::integer("S_ChatTime", value)
+    }
+
+    /// Url of the image displayed during the track loading screen
+    pub fn loading_screen_image_url(value: &str) -> Self {
+        Self::text("S_LoadingScreenImageUrl", value)
+    }
+
+    pub fn delay_before_next_map(value: i32) -> Self {
+        Self::integer("S_DelayBeforeNextMap", value)
+    }
+
+    pub fn warm_up_nb(value: i32) -> Self {
+        Self::integer("S_WarmUpNb", value)
+    }
+
+    pub fn warm_up_duration(value: i32) -> Self {
+        Self::integer("S_WarmUpDuration", value)
+    }
+
+    pub fn disable_go_to_map(value: bool) -> Self {
+        Self::boolean("S_DisableGoToMap", value)
+    }
+
+    /// Url of the image displayed on the checkpoints ground. Override the image set in the Club.
+    pub fn deco_image_url_checkpoint(value: &str) -> Self {
+        Self::text("S_DecoImageUrl_Checkpoint", value)
+    }
+
+    /// Url of the image displayed on the block border. Override the image set in the Club.
+    pub fn deco_image_url_sponsor_4x1(value: &str) -> Self {
+        Self::text("S_DecoImageUrl_DecalSponsor4x1", value)
+    }
+
+    /// Url of the image displayed below the podium and big screen. Override the image set in the Club.
+    pub fn deco_image_url_screen_16x1(value: &str) -> Self {
+        Self::text("S_DecoImageUrl_Screen16x1", value)
+    }
+
+    /// Url of the image displayed on the two big screens. Override the image set in the Club.
+    pub fn deco_image_url_screen_16x9(value: &str) -> Self {
+        Self::text("S_DecoImageUrl_Screen16x9", value)
+    }
+
+    /// Url of the image displayed on the bleachers. Override the image set in the Club.
+    pub fn deco_image_url_screen_8x1(value: &str) -> Self {
+        Self::text("S_DecoImageUrl_Screen8x1", value)
+    }
+
+    /// default: `/api/club/room/:ServerLogin/whoami`
+    /// Url of the API route to get the deco image url. You can replace ":ServerLogin" with a login from a server in another club to use its images.
+    pub fn deco_image_url_who_am_i(value: &str) -> Self {
+        Self::text("S_DecoImageUrl_WhoAmIUrl", value)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1497,21 +1616,6 @@ mod tests {
 
     #[ignore]
     #[tokio::test]
-    async fn test_get_club_activity_list() {
-        let creds = get_test_creds();
-        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
-        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
-            .await
-            .unwrap();
-        let res = client
-            .get_club_activity_list(TEST_CLUB_ID, 10, 0, Some(true))
-            .await
-            .unwrap();
-        println!("Club Activity List: {:?}", res);
-    }
-
-    #[ignore]
-    #[tokio::test]
     async fn test_get_clubs() {
         let creds = get_test_creds();
         let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
@@ -1532,5 +1636,62 @@ mod tests {
             .unwrap();
         let res = client.get_clubs_mine(10, 0).await.unwrap();
         println!("Clubs: {:?}", res);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_get_club_activities() {
+        let creds = get_test_ubi_creds();
+        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
+            .await
+            .unwrap();
+        let res = client
+            .get_club_activities(TEST_CLUB_ID, 10, 0, Some(true))
+            .await
+            .unwrap();
+        eprintln!("Club Activities: {:?}", res);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_club_membership() {
+        let test_club_id = 150; // ubi nadeo club
+        let creds = get_test_ubi_creds();
+        let email = std::env::var("NADEO_TEST_UA_EMAIL").unwrap();
+        let client = NadeoClient::create(creds, user_agent_auto!(&email), 10)
+            .await
+            .unwrap();
+        let my_wsid = client.get_account_wsid().await;
+        let _my_dn = client.get_account_display_name().await;
+        eprintln!("My wsid: {}", my_wsid);
+        eprintln!("My display name: {:?}", _my_dn);
+
+        let get_membership_status = || async {
+            client
+                .get_club_member(test_club_id, &my_wsid)
+                .await
+                .unwrap()
+        };
+
+        let m_status_1 = get_membership_status().await;
+        eprintln!("Membership status: {:?}", m_status_1);
+        let r1 = client
+            // .become_club_member(test_club_id, my_wsid)
+            .become_club_member(test_club_id)
+            .await
+            .unwrap();
+        eprintln!("Join result: {:?}", r1);
+        let m_status_2 = get_membership_status().await;
+        eprintln!("Membership status: {:?} -> {:?}", m_status_1, m_status_2);
+        let r2 = client.leave_club(test_club_id, &my_wsid).await.unwrap();
+        eprintln!("Leave result: {:?}", r2);
+        let m_status_3 = get_membership_status().await;
+        eprintln!(
+            "Membership status: {:?} -> {:?} -> {:?}",
+            m_status_1, m_status_2, m_status_3
+        );
+        eprintln!("Join result: {:?}", r1);
+        eprintln!("Leave result: {:?}", r2);
     }
 }

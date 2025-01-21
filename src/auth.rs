@@ -311,11 +311,19 @@ impl NadeoApiClient for NadeoClient {
         self.keep_long_running_rate_limit().await;
         permit
     }
+
+    async fn get_account_wsid(&self) -> String {
+        self.live_token.read().await.get_account_wsid()
+    }
+
+    async fn get_account_display_name(&self) -> String {
+        self.live_token.read().await.get_account_display_name()
+    }
 }
 
 // proper defaults: 1.0, 1500
-// pub const MAX_REQ_PER_SEC: f64 = 7.0;
-pub const MAX_REQ_PER_SEC: f64 = 1.0;
+pub const MAX_REQ_PER_SEC: f64 = 7.0;
+// pub const MAX_REQ_PER_SEC: f64 = 1.0;
 pub const HIT_MAX_REQ_PER_SEC_WAIT: u64 = 500;
 
 impl NadeoClient {
@@ -611,6 +619,18 @@ impl NadeoToken {
     /// Prefer get_*_authz_header instead. Returns `nadeo_v1 t=access_token`
     pub fn get_access_authz_header(&self) -> String {
         format!("nadeo_v1 t={}", self.access_token)
+    }
+
+    pub fn get_account_wsid(&self) -> String {
+        self.get_access_token_body()
+            .map(|body| body["sub"].as_str().unwrap().to_string())
+            .unwrap()
+    }
+
+    pub fn get_account_display_name(&self) -> String {
+        self.get_access_token_body()
+            .map(|body| body["aun"].as_str().unwrap().to_string())
+            .unwrap()
     }
 
     pub fn get_access_token_body(&self) -> Result<Value, String> {
