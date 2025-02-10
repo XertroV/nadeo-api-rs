@@ -29,6 +29,23 @@ pub enum NadeoError {
     NotFound,
 }
 
+impl std::fmt::Display for NadeoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NadeoError::ArgsErr(s) => write!(f, "ArgsErr: {}", s),
+            NadeoError::ReqwestError(e) => write!(f, "ReqwestError: {}", e),
+            NadeoError::SerdeJsonWithURL(e, url) => {
+                write!(f, "SerdeJsonWithURL: {} - {}", e, url)
+            }
+            NadeoError::SerdeJson(e) => write!(f, "SerdeJson: {}", e),
+            NadeoError::Login(e) => write!(f, "Login: {}", e),
+            NadeoError::NotFound => write!(f, "NotFound"),
+        }
+    }
+}
+
+impl std::error::Error for NadeoError {}
+
 impl From<reqwest::Error> for NadeoError {
     fn from(e: reqwest::Error) -> Self {
         NadeoError::ReqwestError(e)
@@ -337,6 +354,7 @@ pub trait LiveApiClient: NadeoApiClient {
         let (rb, permit) = self.live_get(&url).await;
         let j: Value = rb.send().await?.json().await?;
         drop(permit);
+        eprintln!("get_club_room_by_id: {:?}", j);
         Ok(serde_json::from_value(j).map_err(|e| NadeoError::SerdeJsonWithURL(e, url))?)
     }
 
@@ -1151,7 +1169,18 @@ pub struct ClubRoom_Room {
     pub scalable: bool,
     #[serde(deserialize_with = "empty_list_or_map")]
     pub scriptSettings: HashMap<String, ClubRoom_ScriptSetting>,
-    pub serverInfo: Option<String>,
+    pub serverInfo: Option<Room_ServerInfo>,
+}
+
+// "serverInfo": Object {"currentMapUid": String("VMwR6mbeEygQx2tuGN_1u_bjpej"), "joinLink": String("#qjoin=wEJidcV6Qlq95LvPrvyuHA"), "playerCount": Number(7), "starting": Bool(false)}}, "roomId": Number(270705)}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(non_camel_case_types, non_snake_case)]
+pub struct Room_ServerInfo {
+    pub currentMapUid: String,
+    pub joinLink: String,
+    pub playerCount: i32,
+    pub starting: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1305,6 +1334,16 @@ impl ClubRoom_ScriptSetting {
     /// Url of the API route to get the deco image url. You can replace ":ServerLogin" with a login from a server in another club to use its images.
     pub fn deco_image_url_who_am_i(value: &str) -> Self {
         Self::text("S_DecoImageUrl_WhoAmIUrl", value)
+    }
+
+    /// Synchronize players at the launch of the map, to ensure that no one starts late. Can delay the start by a few seconds.
+    pub fn synchronize_players_at_map_start(value: bool) -> Self {
+        Self::boolean("S_SynchronizePlayersAtMapStart", value)
+    }
+
+    /// Synchronize players at the launch of the round, to ensure that no one starts late. Can delay the start by a few seconds.
+    pub fn synchronize_players_at_round_start(value: bool) -> Self {
+        Self::boolean("S_SynchronizePlayersAtRoundStart", value)
     }
 }
 
@@ -1666,6 +1705,8 @@ mod tests {
         let _my_dn = client.get_account_display_name().await;
         eprintln!("My wsid: {}", my_wsid);
         eprintln!("My display name: {:?}", _my_dn);
+
+        // client.become_club_member(TEST_CLUB_ID).await.unwrap();
 
         let get_membership_status = || async {
             client
